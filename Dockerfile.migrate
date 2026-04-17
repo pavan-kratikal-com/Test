@@ -1,0 +1,8 @@
+# One-shot migration runner. Invoked by docker-compose before engines start.
+FROM node:20-alpine
+WORKDIR /app
+COPY bin/package.json /app/bin/package.json
+RUN cd /app/bin && npm install --omit=dev --no-audit --no-fund
+COPY bin /app/bin
+COPY db /app/db
+CMD ["node", "/app/bin/migrate.js"]

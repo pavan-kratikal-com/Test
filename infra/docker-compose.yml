@@ -11,12 +11,24 @@ services:
     ports: ["3306:3306"]
     volumes:
       - mysql_data:/var/lib/mysql
-      - ../db/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-prootpw"]
       interval: 5s
       timeout: 3s
       retries: 20
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile.migrate
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+      MYSQL_DATABASE: etdp
+    depends_on:
+      mysql: { condition: service_healthy }
+    restart: "no"
 
   redis:
     image: redis:7-alpine
@@ -42,8 +54,23 @@ services:
       args: { SERVICE: gateway }
     environment:
       PORT: "8000"
+      MYSQL_HOST: mysql
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+      MYSQL_DATABASE: etdp
     ports: ["8000:8000"]
-    depends_on: [e1_rspamd, e2_slm, e3_stats_db, e4_graph_db, e5_url_scanner, e6_attachment, e7_visual, e8_sandbox, e9_specialized_ml, synthesizer]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      e1_rspamd: { condition: service_started }
+      e2_slm: { condition: service_started }
+      e3_stats_db: { condition: service_started }
+      e4_graph_db: { condition: service_started }
+      e5_url_scanner: { condition: service_started }
+      e6_attachment: { condition: service_started }
+      e7_visual: { condition: service_started }
+      e8_sandbox: { condition: service_started }
+      e9_specialized_ml: { condition: service_started }
+      synthesizer: { condition: service_started }
 
   e1_rspamd:
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e1_rspamd } }
@@ -57,7 +84,7 @@ services:
       MYSQL_PASSWORD: etdp
       MYSQL_DATABASE: etdp
     depends_on:
-      mysql: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
   e4_graph_db:
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e4_graph_db } }
     environment:
@@ -66,7 +93,7 @@ services:
       MYSQL_PASSWORD: etdp
       MYSQL_DATABASE: etdp
     depends_on:
-      mysql: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
   e5_url_scanner:
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e5_url_scanner } }
   e6_attachment:

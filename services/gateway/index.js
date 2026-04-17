@@ -1,10 +1,9 @@
 // Gateway: orchestrates fast path (E1-E4) and deep path (E5-E9 + synthesizer).
-// Stub behavior: fans out to engine stubs over HTTP, aggregates signals via
-// weighted sum, returns a FinalVerdict. No real ML, no quarantine, no async
-// deep-path queue yet.
+// Phase 1: persists verdicts in MySQL and exposes feedback + history APIs.
 import express from "express";
 import { request } from "undici";
 import { Email } from "@etdp/shared/schemas";
+import { safeQuery } from "@etdp/shared/mysql";
 
 const FAST_PATH = ["e1_rspamd", "e2_slm", "e3_stats_db", "e4_graph_db"];
 const DEEP_PATH = ["e5_url_scanner", "e6_attachment", "e7_visual", "e9_specialized_ml"];
@@ -52,6 +51,35 @@ function aggregate(signals) {
   return { total, label: "ham", verdict: "allow", reason: "No significant threat signals." };
 }
 
+async function persistVerdict(email, verdict) {
+  await safeQuery(
+    `INSERT INTO verdicts
+       (org_id, message_id, sender, recipient, verdict, label, confidence,
+        threat_score, reason, signals, pipeline, fast_path_ms, deep_path_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       verdict=VALUES(verdict), label=VALUES(label), confidence=VALUES(confidence),
+       threat_score=VALUES(threat_score), reason=VALUES(reason),
+       signals=VALUES(signals), pipeline=VALUES(pipeline),
+       fast_path_ms=VALUES(fast_path_ms), deep_path_ms=VALUES(deep_path_ms)`,
+    [
+      email.org_id,
+      email.message_id,
+      email.sender,
+      (email.recipients && email.recipients[0]) || "",
+      verdict.verdict,
+      verdict.label,
+      verdict.confidence,
+      verdict.threat_score,
+      verdict.reason,
+      JSON.stringify(verdict.signals_fired),
+      JSON.stringify(verdict.pipeline),
+      verdict.pipeline.fast_path_ms ?? null,
+      verdict.pipeline.deep_path_ms ?? null,
+    ],
+  );
+}
+
 const app = express();
 app.use(express.json({ limit: "25mb" }));
 
@@ -87,7 +115,7 @@ app.post("/v1/analyze", async (req, res) => {
   const allSignals = [...fastSignals, ...deepSignals];
   const finalAgg = aggregate(allSignals);
 
-  res.json({
+  const verdict = {
     verdict: finalAgg.verdict,
     confidence: Math.min(finalAgg.total / 15, 1),
     label: finalAgg.label,
@@ -105,9 +133,68 @@ app.post("/v1/analyze", async (req, res) => {
     metadata: {
       org_id: email.org_id,
       message_id: email.message_id,
-      model_version: "scaffold-0.1",
+      model_version: "scaffold-0.2",
     },
-  });
+  };
+
+  await persistVerdict(email, verdict);
+  res.json(verdict);
+});
+
+// PRD §10.1 management APIs.
+
+app.post("/v1/feedback", async (req, res) => {
+  const { org_id, message_id, action, source = "user", notes = null } = req.body || {};
+  if (!org_id || !message_id || !action) {
+    return res.status(400).json({ error: "org_id, message_id, action required" });
+  }
+  const valid = ["spam", "ham", "phishing", "not_spam", "release", "confirm_block"];
+  if (!valid.includes(action)) {
+    return res.status(400).json({ error: `action must be one of ${valid.join(", ")}` });
+  }
+  const r = await safeQuery(
+    `INSERT INTO feedback_labels (org_id, message_id, action, source, notes)
+     VALUES (?, ?, ?, ?, ?)`,
+    [org_id, message_id, action, source, notes],
+  );
+  if (!r.ok) return res.status(500).json({ error: r.error });
+  res.json({ status: "ok", id: r.rows.insertId });
+});
+
+app.get("/v1/verdicts", async (req, res) => {
+  const { org_id, label, since, limit = "50" } = req.query;
+  if (!org_id) return res.status(400).json({ error: "org_id required" });
+
+  const clauses = ["org_id = ?"];
+  const params = [org_id];
+  if (label) { clauses.push("label = ?"); params.push(label); }
+  if (since) { clauses.push("created_at >= ?"); params.push(new Date(since)); }
+
+  const limitN = Math.min(Number(limit) || 50, 500);
+  const r = await safeQuery(
+    `SELECT id, org_id, message_id, sender, recipient, verdict, label, confidence,
+            threat_score, reason, fast_path_ms, deep_path_ms, created_at
+     FROM verdicts
+     WHERE ${clauses.join(" AND ")}
+     ORDER BY created_at DESC
+     LIMIT ${limitN}`,
+    params,
+  );
+  if (!r.ok) return res.status(500).json({ error: r.error });
+  res.json({ count: r.rows.length, verdicts: r.rows });
+});
+
+app.get("/v1/stats", async (req, res) => {
+  const { org_id } = req.query;
+  if (!org_id) return res.status(400).json({ error: "org_id required" });
+  const r = await safeQuery(
+    `SELECT label, verdict, COUNT(*) AS n
+     FROM verdicts WHERE org_id = ?
+     GROUP BY label, verdict`,
+    [org_id],
+  );
+  if (!r.ok) return res.status(500).json({ error: r.error });
+  res.json({ org_id, breakdown: r.rows });
 });
 
 const port = Number(process.env.PORT || 8000);

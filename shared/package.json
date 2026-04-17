@@ -5,10 +5,12 @@
   "main": "schemas.js",
   "exports": {
     "./schemas": "./schemas.js",
-    "./engineBase": "./engineBase.js"
+    "./engineBase": "./engineBase.js",
+    "./mysql": "./mysql.js"
   },
   "dependencies": {
     "express": "^4.21.0",
+    "mysql2": "^3.11.3",
     "zod": "^3.23.8"
   }
 }
