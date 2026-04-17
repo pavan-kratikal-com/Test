@@ -18,11 +18,11 @@ const FREEMAIL = new Set([
   "proton.me", "icloud.com", "aol.com",
 ]);
 
-function senderDomain(email) {
+export function senderDomain(email) {
   return email.sender.includes("@") ? email.sender.split("@")[1].toLowerCase() : "";
 }
 
-function receivedAt(email) {
+export function receivedAt(email) {
   if (email.received_at) {
     const d = new Date(email.received_at);
     if (!Number.isNaN(d.getTime())) return d;
@@ -30,12 +30,12 @@ function receivedAt(email) {
   return new Date();
 }
 
-function sig(name, score, detail = {}) {
+export function sig(name, score, detail = {}) {
   return { engine: "stats_db", signal: name, score, detail };
 }
 
 // Simple edit distance for lookalike_domain; caps at 3.
-function editDist(a, b, cap = 3) {
+export function editDist(a, b, cap = 3) {
   if (Math.abs(a.length - b.length) > cap) return cap + 1;
   const dp = Array.from({ length: a.length + 1 }, (_, i) => i);
   for (let j = 1; j <= b.length; j++) {
@@ -124,7 +124,7 @@ async function loadContext(email) {
 }
 
 // Each signal returns Signal | null. All run against the shared context.
-function extractSignals(email, ctx, orgCtx) {
+export function extractSignals(email, ctx, orgCtx = {}) {
   const signals = [];
   const bizStart = orgCtx.business_hours_start ?? 8;
   const bizEnd = orgCtx.business_hours_end ?? 20;
@@ -421,7 +421,7 @@ async function persist(email, ctx) {
 }
 
 // Apply the per-org ramp weight (0 → 1 over 30 days) to every signal score.
-function applyWeight(signals, weight) {
+export function applyWeight(signals, weight) {
   if (weight >= 0.999) return signals;
   return signals.map((s) => ({ ...s, score: s.score * weight }));
 }

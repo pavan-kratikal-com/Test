@@ -4,7 +4,7 @@ import { makeApp, listen } from "@etdp/shared/engineBase";
 
 const DANGEROUS_EXT = [".exe", ".scr", ".js", ".vbs", ".bat", ".jar", ".lnk"];
 
-function analyze(email) {
+export function analyze(email) {
   const signals = [];
   for (const att of email.attachments || []) {
     const name = (att.filename || "").toLowerCase();

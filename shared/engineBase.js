@@ -44,8 +44,9 @@ export function makeApp(engineName, analyzeFn) {
 }
 
 export function listen(app, engineName) {
+  if (process.env.ETDP_NO_LISTEN === "1") return null;
   const port = Number(process.env.PORT || 80);
-  app.listen(port, () => {
+  return app.listen(port, () => {
     console.log(`[${engineName}] listening on :${port}`);
   });
 }

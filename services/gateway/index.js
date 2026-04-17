@@ -92,7 +92,7 @@ async function loadOrgContext(orgId) {
   });
 }
 
-function aggregate(signals, thresholds, industryWeights) {
+export function aggregate(signals, thresholds, industryWeights) {
   // Apply industry weight: scale phishing/malware signals if the org's
   // industry prior raises them.
   let total = 0;
@@ -306,5 +306,9 @@ app.get("/v1/orgs/:id", async (req, res) => {
   res.json(r.rows[0]);
 });
 
-const port = Number(process.env.PORT || 8000);
-app.listen(port, () => console.log(`[gateway] listening on :${port}`));
+if (process.env.ETDP_NO_LISTEN !== "1") {
+  const port = Number(process.env.PORT || 8000);
+  app.listen(port, () => console.log(`[gateway] listening on :${port}`));
+}
+
+export { app };

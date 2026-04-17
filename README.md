@@ -70,6 +70,17 @@ node tools/evaluate.js examples/labeled_emails.jsonl
 Prints per-label precision/recall/F1, confusion matrix, and FP rate. Exits
 non-zero if FP rate exceeds 0.5% (PRD Phase 1 target).
 
+## Unit tests
+
+```
+npm test
+```
+
+Runs 70+ unit tests (Node's native `node:test`) covering shared schemas,
+gateway aggregation + industry weights, and every engine's pure analyze
+logic. No MySQL or Redis required — the tests set `ETDP_NO_LISTEN=1` so
+engine modules can be imported without starting an HTTP listener.
+
 ## Status
 
 **Phase 1 complete.** What's real vs stubbed:

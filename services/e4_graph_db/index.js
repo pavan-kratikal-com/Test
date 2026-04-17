@@ -2,7 +2,7 @@
 // for Phase 2; Neo4j later), 26 trust/anomaly signals.
 import { makeApp, listen } from "@etdp/shared/engineBase";
 
-function analyze(_email) {
+export function analyze(_email) {
   // Phase 0: no edges loaded yet.
   return [];
 }

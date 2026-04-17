@@ -2,7 +2,7 @@
 // brand logo similarity (CLIP/ResNet-18), OCR, 18 signals.
 import { makeApp, listen } from "@etdp/shared/engineBase";
 
-function analyze(email) {
+export function analyze(email) {
   const html = (email.body_html || "").toLowerCase();
   const signals = [];
   if (html.includes('type="password"') || html.includes("type='password'")) {

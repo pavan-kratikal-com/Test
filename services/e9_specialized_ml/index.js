@@ -15,7 +15,7 @@ function hasMixedScript(text) {
   return asciiAlpha && nonAsciiAlpha;
 }
 
-function analyze(email) {
+export function analyze(email) {
   const signals = [];
   const domain = email.sender.includes("@") ? email.sender.split("@")[1] : "";
   if (domain && hasMixedScript(domain)) {

@@ -2,7 +2,7 @@
 // 13 dynamic-behavior signals. Cloud-only — never runs on appliance.
 import { makeApp, listen } from "@etdp/shared/engineBase";
 
-function analyze(_email) {
+export function analyze(_email) {
   // Gating decision lives in gateway; sandbox itself is async/queued.
   return [];
 }

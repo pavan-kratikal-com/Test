@@ -1,0 +1,9 @@
+{
+  "name": "@etdp/root",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "ETDP_NO_LISTEN=1 node --test tests/*.test.js"
+  }
+}

@@ -5,7 +5,7 @@ import { makeApp, listen } from "@etdp/shared/engineBase";
 const URL_RE = /https?:\/\/[^\s<>"']+/gi;
 const SUSPICIOUS_TLDS = [".zip", ".mov", ".top", ".xyz", ".click"];
 
-function analyze(email) {
+export function analyze(email) {
   const urls = (email.body_text || "").match(URL_RE) || [];
   const signals = [];
   for (const url of urls) {

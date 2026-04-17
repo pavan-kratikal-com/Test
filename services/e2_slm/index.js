@@ -12,7 +12,7 @@ import { makeApp, listen } from "@etdp/shared/engineBase";
 
 const URGENCY_TOKENS = ["urgent", "immediately", "asap", "wire transfer", "gift card", "verify now"];
 
-function analyze(email) {
+export function analyze(email) {
   const text = `${email.subject} ${email.body_text}`.toLowerCase();
   const hits = URGENCY_TOKENS.filter((t) => text.includes(t));
   const signals = [];
