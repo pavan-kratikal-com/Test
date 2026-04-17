@@ -53,23 +53,39 @@ curl -X POST http://localhost:8000/v1/analyze \
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/v1/analyze` | Run email through fast + deep path, persist verdict |
-| POST | `/v1/feedback` | Submit user/SOC label (spam/ham/phishing/release/confirm_block) |
+| POST | `/v1/feedback` | Submit label (spam/ham/phishing/release/confirm_block) |
 | GET  | `/v1/verdicts?org_id=&label=&since=&limit=` | Verdict history |
 | GET  | `/v1/stats?org_id=` | Label × verdict breakdown |
+| POST | `/v1/orgs` | Register an org (industry, timezone, thresholds) |
+| GET  | `/v1/orgs/:id` | Fetch org config |
+| PUT  | `/v1/orgs/:id/thresholds` | Update block/quarantine thresholds |
 | GET  | `/health` | Liveness |
+
+## Evaluation
+
+```
+node tools/evaluate.js examples/labeled_emails.jsonl
+```
+
+Prints per-label precision/recall/F1, confusion matrix, and FP rate. Exits
+non-zero if FP rate exceeds 0.5% (PRD Phase 1 target).
 
 ## Status
 
-Phase 1 in progress. What's real vs stubbed:
+**Phase 1 complete.** What's real vs stubbed:
 
 | Component | State |
 |---|---|
 | Gateway fast/deep path orchestration | real |
-| Verdict persistence (MySQL) | real |
-| Feedback + history APIs | real |
-| **E3 Stats DB** — 5 of 36 signals | real (first_time_sender, first_time_pair, domain_first_seen[_recent], off_hours_email, sender_burst) |
-| E1 rspamd, E2 SLM, E4–E9, synthesizer | stubs — mock signals only |
+| **Staged fanout** (E1 → E2 with prior_signals) | real |
+| **Per-org registry** with industry priors + thresholds | real |
+| **Cold-start ramp** (Stats DB signals scale 0→1 over 30 days) | real |
+| **E3 Stats DB** — 25 of 36 signals | real; 11 stubbed with `DATA_DEP` tags (need IdP logs, IP geo, LDAP, threading) |
+| Verdict persistence + feedback + history APIs | real |
+| Redis cache (Stats DB hot lookups) | real (no-op fallback) |
+| Evaluation framework | real |
+| E1 rspamd, E2 SLM, E4–E9, synthesizer detection logic | stubs — mock signals only |
 | Async deep-path queue (Kafka) | declared in compose, not wired |
-| Per-org fine-tuning | not started (Phase 2) |
+| Per-org ML fine-tuning | Phase 2 |
 
 See `prd.md` §14 for the phased roadmap.

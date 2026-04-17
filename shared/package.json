@@ -6,11 +6,13 @@
   "exports": {
     "./schemas": "./schemas.js",
     "./engineBase": "./engineBase.js",
-    "./mysql": "./mysql.js"
+    "./mysql": "./mysql.js",
+    "./cache": "./cache.js"
   },
   "dependencies": {
     "express": "^4.21.0",
     "mysql2": "^3.11.3",
+    "redis": "^4.7.0",
     "zod": "^3.23.8"
   }
 }
