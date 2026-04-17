@@ -83,22 +83,33 @@ engine modules can be imported without starting an HTTP listener.
 
 ## Status
 
-**Phase 1 complete + hardened.** What's real vs stubbed:
+**Phase 2 complete.** What's real vs stubbed:
 
 | Component | State |
 |---|---|
 | Gateway fast/deep path orchestration | real |
 | **Staged fanout** (E1 → E2 with prior_signals) | real |
 | **Per-org registry** with industry priors + thresholds | real |
-| **Cold-start ramp** (Stats DB signals scale 0→1 over 30 days) | real |
-| **E3 Stats DB** — 25 of 36 signals | real; 11 stubbed with `DATA_DEP` tags |
+| **Cold-start ramps** (stats 30d, graph 60d) | real |
+| **E3 Stats DB** — 25 of 36 signals | real |
+| **E4 Graph DB** — 26 signals (4 DATA_DEP stubs for LDAP/clique) | real — nodes, edges, trust scoring, display-name mapping |
+| **E5 URL Scanner** | real — redirect chain via undici, DNS/landing-page DOM fetch, reputation blocklist, MySQL-backed 24h cache |
+| **E9 Specialized ML** — full 13 signals | real — homoglyph/confusable/IDN lookalike, header order/combo/received/Message-ID, base64/QP/charset, MIME tree anomalies |
+| **Per-org fine-tuning** | real — logistic regression on signal feature vector, training jobs, model registry |
+| **A/B canary + rollback** | real — hash-sharded traffic split, auto-rollback on accuracy regression |
 | Verdict persistence + feedback + history APIs | real |
-| Redis cache (Stats DB hot lookups) | real (no-op fallback) |
-| Evaluation framework | real |
-| **Schema-per-tenant MySQL isolation** | real — `etdp_shared` + `etdp_org_<id>` |
-| **Kafka-backed async deep path** | real (Kafka up) / sync-fallback (Kafka down) |
-| **Real rspamd integration** (E1 HTTP translator) | real (RSPAMD_URL set) / fallback grep |
-| E2 SLM, E4–E9, synthesizer detection logic | stubs — mock signals only |
-| Per-org ML fine-tuning | Phase 2 |
+| Redis cache, evaluation framework | real |
+| **Schema-per-tenant MySQL isolation** | real |
+| **Kafka-backed async deep path** | real / sync-fallback |
+| **Real rspamd integration** (E1 HTTP translator) | real / grep-fallback |
+| E2 SLM classifier (real 1.9M-param transformer) | stub — urgency tokens only; real model lives in Python sidecar (Phase 3) |
+| E7 Visual, E8 Sandbox, synthesizer | stubs (Phase 3+) |
 
 See `prd.md` §14 for the phased roadmap.
+
+## Training a per-org model
+
+```
+node tools/train.js --org org_demo_001 [--canary 10] [--min-labels 20] [--deploy-incumbent]
+node tools/rollback.js --org org_demo_001 --reason "metrics regressed"
+```

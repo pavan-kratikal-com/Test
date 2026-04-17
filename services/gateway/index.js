@@ -13,6 +13,9 @@ import { Email } from "@etdp/shared/schemas";
 import { safeQuery, safeOrgQuery, provisionOrg } from "@etdp/shared/mysql";
 import { cached } from "@etdp/shared/cache";
 import { produce, kafkaEnabled, TOPIC_DEEP_PATH } from "@etdp/shared/kafka";
+import { signalsToFeatures } from "@etdp/shared/features";
+import { predictProba } from "@etdp/shared/logreg";
+import { getDeployments } from "@etdp/shared/modelRegistry";
 
 const FAST_PRE = ["e1_rspamd"];                        // stage 1 (E1 alone)
 const FAST_MAIN = ["e2_slm", "e3_stats_db", "e4_graph_db"]; // stage 2
@@ -69,6 +72,7 @@ async function loadOrgContext(orgId) {
         business_hours_start: 8, business_hours_end: 20,
         thresholds: { block: 10, quarantine: 5 },
         stats_db_weight: 1.0,
+        graph_db_weight: 1.0,
         industry_weights: { bec: 1, phishing: 1, malware: 1 },
       };
     }
@@ -76,6 +80,7 @@ async function loadOrgContext(orgId) {
     const onboardedMs = new Date(row.onboarded_at).getTime();
     const daysSince = (Date.now() - onboardedMs) / 86400000;
     const statsWeight = Math.min(Math.max(daysSince / 30, 0), 1);
+    const graphWeight = Math.min(Math.max(daysSince / 60, 0), 1);  // 60-day ramp per PRD §9.2
     return {
       known: true,
       industry: row.industry,
@@ -84,6 +89,7 @@ async function loadOrgContext(orgId) {
       business_hours_end: row.business_hours_end,
       thresholds: typeof row.thresholds === "string" ? JSON.parse(row.thresholds) : row.thresholds,
       stats_db_weight: statsWeight,
+      graph_db_weight: graphWeight,
       industry_weights: {
         bec: Number(row.bec_weight || 1),
         phishing: Number(row.phishing_weight || 1),
@@ -116,6 +122,40 @@ export function aggregate(signals, thresholds, industryWeights) {
   }
   return { total, label: "ham", verdict: "allow",
     reason: "No significant threat signals." };
+}
+
+// Score the email against the org's incumbent/canary models, choosing
+// one deterministically via a hash of message_id so the same email
+// consistently hits the same model (stable A/B test).
+async function scoreOrgModel(orgId, signals, messageId) {
+  const deployments = await cached(`deploys:${orgId}`, 30,
+    () => getDeployments(orgId));
+  if (!deployments || deployments.length === 0) return null;
+  const incumbent = deployments.find((d) => d.role === "incumbent");
+  const canary = deployments.find((d) => d.role === "canary");
+
+  // Which model handles this request?
+  let chosen = incumbent;
+  if (canary) {
+    const shard = hashMod100(messageId);
+    if (shard < Number(canary.traffic_pct || 0)) chosen = canary;
+  }
+  if (!chosen) return null;
+
+  const features = signalsToFeatures(signals);
+  const proba = predictProba(chosen.weights, chosen.intercept, features);
+  return {
+    model_version: chosen.model_version,
+    model_role: chosen.role,
+    probability: Number(proba.toFixed(4)),
+    features_on: features.reduce((a, v) => a + v, 0),
+  };
+}
+
+function hashMod100(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return Math.abs(h) % 100;
 }
 
 async function persistVerdict(email, verdict) {
@@ -203,6 +243,12 @@ app.post("/v1/analyze", async (req, res) => {
         reason: `Awaiting deep path (fast score ${fastAgg.total.toFixed(1)}).` }
     : aggregate(allSignals, orgCtx.thresholds, orgCtx.industry_weights);
 
+  // ── Per-org model scoring (A/B rollout) ────────────────────────────
+  // The trained logistic regression runs as a second opinion over the
+  // engine signal vector. Canary deployments receive traffic_pct % of
+  // requests (hash-sharded on message_id for determinism).
+  const modelResult = await scoreOrgModel(email.org_id, allSignals, email.message_id);
+
   const verdict = {
     verdict: finalAgg.verdict,
     confidence: Math.min(finalAgg.total / 15, 1),
@@ -222,9 +268,10 @@ app.post("/v1/analyze", async (req, res) => {
     },
     metadata: {
       org_id: email.org_id, message_id: email.message_id,
-      model_version: "phase1-complete-0.1",
+      model_version: "phase2-0.1",
       org_known: orgCtx.known,
       industry: orgCtx.industry,
+      org_model: modelResult,
     },
   };
 
@@ -325,6 +372,38 @@ app.get("/v1/orgs/:id", async (req, res) => {
   if (!r.ok) return res.status(500).json({ error: r.error });
   if (r.rows.length === 0) return res.status(404).json({ error: "org not found" });
   res.json(r.rows[0]);
+});
+
+// ── Model registry (PRD §10.1 admin APIs) ──────────────────────────────
+
+app.get("/v1/orgs/:id/models", async (req, res) => {
+  const r = await safeQuery(
+    `SELECT version, model_kind, val_accuracy, val_precision, val_recall,
+            val_fp_rate, trained_at, trained_on, status, parent_version
+     FROM org_models WHERE org_id=? ORDER BY trained_at DESC LIMIT 50`,
+    [req.params.id],
+  );
+  if (!r.ok) return res.status(500).json({ error: r.error });
+  res.json({ count: r.rows.length, models: r.rows });
+});
+
+app.get("/v1/orgs/:id/deployments", async (req, res) => {
+  const deployments = await getDeployments(req.params.id);
+  res.json(deployments.map((d) => ({
+    role: d.role, model_version: d.model_version, traffic_pct: d.traffic_pct,
+    val_accuracy: d.val_accuracy ?? null,
+  })));
+});
+
+app.get("/v1/orgs/:id/training_jobs", async (req, res) => {
+  const r = await safeQuery(
+    `SELECT id, started_at, finished_at, status, labels_used,
+            resulting_version, notes
+     FROM training_jobs WHERE org_id=? ORDER BY started_at DESC LIMIT 50`,
+    [req.params.id],
+  );
+  if (!r.ok) return res.status(500).json({ error: r.error });
+  res.json({ count: r.rows.length, jobs: r.rows });
 });
 
 if (process.env.ETDP_NO_LISTEN !== "1") {

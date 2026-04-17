@@ -8,7 +8,10 @@
     "./engineBase": "./engineBase.js",
     "./mysql": "./mysql.js",
     "./cache": "./cache.js",
-    "./kafka": "./kafka.js"
+    "./kafka": "./kafka.js",
+    "./logreg": "./logreg.js",
+    "./features": "./features.js",
+    "./modelRegistry": "./modelRegistry.js"
   },
   "dependencies": {
     "express": "^4.21.0",

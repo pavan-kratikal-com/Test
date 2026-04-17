@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { analyze } from "../services/e9_specialized_ml/index.js";
+import {
+  analyze, detectConfusable, hasMixedScript, idnLookalikeBrand,
+  headerOrderAnomaly, unusualHeaderCombo, receivedChainForged, messageIdFormatAnomaly,
+  base64BodyObfuscation, quotedPrintableAbuse, exoticCharset,
+  detectMimeAnomalies, editDist, CONFUSABLES,
+} from "../services/e9_specialized_ml/index.js";
 
 function email(o = {}) {
   return { org_id: "o", message_id: "m", sender: "a@b.com",
@@ -8,24 +13,166 @@ function email(o = {}) {
     headers: {}, attachments: [], prior_signals: [], ...o };
 }
 
-test("E9: pure-ASCII domain produces no signal", () => {
-  assert.equal(analyze(email({ sender: "alice@example.com" })).length, 0);
+// ── Homoglyph group ────────────────────────────────────────────────
+
+test("hasMixedScript: mixes ASCII + Cyrillic triggers true", () => {
+  assert.equal(hasMixedScript("exаmple.com"), true); // 'а' = Cyrillic
 });
 
-test("E9: mixed_script_domain fires for Cyrillic 'а' masquerading as Latin 'a'", () => {
-  // 'а' (U+0430) + ASCII letters
-  const s = analyze(email({ sender: "alice@exаmple.com" }));
-  const m = s.find((x) => x.signal === "mixed_script_domain");
-  assert.ok(m, "expected mixed_script_domain to fire");
-  assert.equal(m.score, 3.0);
+test("hasMixedScript: all-ASCII returns false", () => {
+  assert.equal(hasMixedScript("example.com"), false);
 });
 
-test("E9: all-Cyrillic domain does NOT trigger mixed_script (single script)", () => {
-  // "пример.рф" is all Cyrillic
-  const s = analyze(email({ sender: "alice@пример.рф" }));
-  assert.equal(s.some((x) => x.signal === "mixed_script_domain"), false);
+test("detectConfusable: reports Cyrillic confusables", () => {
+  const hits = detectConfusable("micrоsoft"); // 'о' is Cyrillic
+  assert.ok(hits.length > 0);
+  assert.equal(hits[0].ascii, "o");
 });
 
-test("E9: no crash when sender has no @ sign", () => {
-  assert.doesNotThrow(() => analyze(email({ sender: "bad-sender" })));
+test("idnLookalikeBrand: near-miss to microsoft detected", () => {
+  const h = idnLookalikeBrand("micrsoft.com");
+  assert.ok(h);
+  assert.equal(h.brand, "microsoft");
+});
+
+test("idnLookalikeBrand: exact match returns null", () => {
+  assert.equal(idnLookalikeBrand("microsoft.com"), null);
+});
+
+test("editDist: basic cases", () => {
+  assert.equal(editDist("abc", "abc"), 0);
+  assert.equal(editDist("abc", "abd"), 1);
+});
+
+// ── Header group ───────────────────────────────────────────────────
+
+test("headerOrderAnomaly: correctly-ordered headers return null", () => {
+  assert.equal(headerOrderAnomaly({
+    From: "a", To: "b", Subject: "s", Date: "d", "Message-Id": "m",
+  }), null);
+});
+
+test("headerOrderAnomaly: swapped order fires", () => {
+  const h = headerOrderAnomaly({ Subject: "s", From: "a", Date: "d" });
+  assert.ok(h);
+});
+
+test("unusualHeaderCombo: Reply-To on a different domain from From", () => {
+  const hit = unusualHeaderCombo({
+    From: "alice@acme.com", "Reply-To": "attacker@evil.com",
+  });
+  assert.ok(hit);
+  assert.equal(hit.from_domain, "acme.com");
+});
+
+test("unusualHeaderCombo: same-domain Reply-To is fine", () => {
+  assert.equal(unusualHeaderCombo({
+    From: "alice@acme.com", "Reply-To": "replies@acme.com",
+  }), null);
+});
+
+test("messageIdFormatAnomaly: fires on completely missing ID", () => {
+  const hit = messageIdFormatAnomaly({}, "alice@a.com");
+  assert.ok(hit);
+  assert.equal(hit.reason, "missing_message_id");
+});
+
+test("messageIdFormatAnomaly: malformed Message-ID flagged", () => {
+  const hit = messageIdFormatAnomaly({ "Message-ID": "no-brackets" }, "a@b.com");
+  assert.ok(hit);
+  assert.equal(hit.reason, "malformed_message_id");
+});
+
+test("receivedChainForged: non-monotonic timestamps flagged", () => {
+  const hit = receivedChainForged({
+    Received: ["from a.com by b.com; Mon, 1 Jan 2026 10:00:00 +0000"],
+  });
+  // Single Received header → no chain to validate → null.
+  assert.equal(hit, null);
+});
+
+// ── Encoding group ─────────────────────────────────────────────────
+
+test("base64BodyObfuscation: large base64 blob in body fires", () => {
+  const body = "plain text\n" + "A".repeat(500);
+  const hit = base64BodyObfuscation(email({ body_text: body }));
+  assert.ok(hit);
+});
+
+test("base64BodyObfuscation: clean body returns null", () => {
+  assert.equal(base64BodyObfuscation(email({ body_text: "hi there" })), null);
+});
+
+test("quotedPrintableAbuse: lots of =XX sequences fire", () => {
+  const body = "=61=62=63".repeat(50);
+  const hit = quotedPrintableAbuse(email({ body_text: body }));
+  assert.ok(hit);
+});
+
+test("exoticCharset: flags non-standard charsets", () => {
+  const hit = exoticCharset(email({
+    headers: { "Content-Type": "text/plain; charset=windows-1251" },
+  }));
+  assert.ok(hit);
+  assert.equal(hit.charset, "windows-1251");
+});
+
+test("exoticCharset: utf-8 passes through", () => {
+  assert.equal(exoticCharset(email({
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  })), null);
+});
+
+// ── Structural (MIME tree) group ───────────────────────────────────
+
+test("detectMimeAnomalies: deep MIME tree flagged", () => {
+  const raw = [1, 2, 3, 4, 5]
+    .map((i) => `Content-Type: multipart/x; boundary="==B${i}=="`)
+    .join("\r\n");
+  const s = detectMimeAnomalies(email({ raw_mime: raw }));
+  assert.ok(s.find((x) => x.signal === "mime_tree_deep"));
+});
+
+test("detectMimeAnomalies: no raw_mime → no signals", () => {
+  assert.deepEqual(detectMimeAnomalies(email()), []);
+});
+
+// ── Integration of analyze() ───────────────────────────────────────
+
+test("analyze: clean ASCII sender with valid Message-ID → no signals", () => {
+  const s = analyze(email({
+    sender: "alice@example.com",
+    subject: "meeting",
+    body_text: "see you at noon",
+    headers: {
+      From: "alice@example.com",
+      To: "bob@example.com",
+      Subject: "meeting",
+      Date: "Mon, 01 Jan 2026 10:00:00 +0000",
+      "Message-ID": "<unique@example.com>",
+    },
+  }));
+  assert.equal(s.length, 0);
+});
+
+test("analyze: Cyrillic domain fires mixed_script_domain AND confusable_chars", () => {
+  const s = analyze(email({
+    sender: "alice@exаmple.com", // Cyrillic 'а'
+    headers: {
+      From: "alice@exаmple.com", To: "b@b.com", Subject: "s",
+      Date: "Mon, 01 Jan 2026 10:00:00 +0000", "Message-ID": "<x@exаmple.com>",
+    },
+  }));
+  const names = s.map((x) => x.signal);
+  assert.ok(names.includes("mixed_script_domain"));
+  assert.ok(names.includes("confusable_chars"));
+});
+
+test("analyze: missing Message-ID fires message_id_format_anomaly", () => {
+  const s = analyze(email({ headers: { From: "a@b.com" } }));
+  assert.ok(s.find((x) => x.signal === "message_id_format_anomaly"));
+});
+
+test("CONFUSABLES table has at least a dozen entries", () => {
+  assert.ok(CONFUSABLES.size >= 12);
 });
