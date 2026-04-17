@@ -1,0 +1,14 @@
+{
+  "name": "@etdp/shared",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "schemas.js",
+  "exports": {
+    "./schemas": "./schemas.js",
+    "./engineBase": "./engineBase.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "zod": "^3.23.8"
+  }
+}

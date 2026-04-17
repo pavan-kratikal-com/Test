@@ -1,0 +1,84 @@
+name: etdp
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: etdp
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+    ports: ["3306:3306"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-prootpw"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  kafka:
+    image: bitnami/kafka:3.7
+    environment:
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports: ["9092:9092"]
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args: { SERVICE: gateway }
+    environment:
+      PORT: "8000"
+    ports: ["8000:8000"]
+    depends_on: [e1_rspamd, e2_slm, e3_stats_db, e4_graph_db, e5_url_scanner, e6_attachment, e7_visual, e8_sandbox, e9_specialized_ml, synthesizer]
+
+  e1_rspamd:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e1_rspamd } }
+  e2_slm:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e2_slm } }
+  e3_stats_db:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e3_stats_db } }
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+      MYSQL_DATABASE: etdp
+    depends_on:
+      mysql: { condition: service_healthy }
+  e4_graph_db:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e4_graph_db } }
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+      MYSQL_DATABASE: etdp
+    depends_on:
+      mysql: { condition: service_healthy }
+  e5_url_scanner:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e5_url_scanner } }
+  e6_attachment:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e6_attachment } }
+  e7_visual:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e7_visual } }
+  e8_sandbox:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e8_sandbox } }
+  e9_specialized_ml:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e9_specialized_ml } }
+  synthesizer:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: synthesizer } }
+
+volumes:
+  mysql_data:

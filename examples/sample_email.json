@@ -1,0 +1,11 @@
+{
+  "org_id": "org_demo_001",
+  "message_id": "<abc123@mail.example.com>",
+  "sender": "ceo@login-microsft.top",
+  "recipients": ["finance@example.com"],
+  "subject": "URGENT: wire transfer needed immediately",
+  "body_text": "Please process a wire transfer ASAP. Confirm here: https://login-microsft.top/auth",
+  "body_html": "<form><input type=\"password\" name=\"p\"></form>",
+  "headers": { "Authentication-Results": "spf=fail dmarc=fail" },
+  "attachments": [{ "filename": "invoice.exe", "size": 12345 }]
+}
