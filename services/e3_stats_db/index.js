@@ -9,7 +9,7 @@
 // per-email cost is ~6 parallel queries regardless of how many signals fire.
 
 import { makeApp, listen } from "@etdp/shared/engineBase";
-import { safeQuery } from "@etdp/shared/mysql";
+import { safeOrgQuery } from "@etdp/shared/mysql";
 import { cached } from "@etdp/shared/cache";
 
 const URL_RE = /https?:\/\/[^\s<>"']+/gi;
@@ -65,7 +65,7 @@ async function loadContext(email) {
   ] = await Promise.all([
     // Overall sender history: counts and date bounds.
     cached(`sh:${orgId}:${sender}`, 30, () =>
-      safeQuery(
+      safeOrgQuery(orgId,
         `SELECT COUNT(*) AS n, MIN(\`timestamp\`) AS first_seen, MAX(\`timestamp\`) AS last_seen,
                 AVG(size_bytes) AS avg_size, AVG(link_count) AS avg_links,
                 AVG(attachment_count) AS avg_attach, AVG(1) AS dummy
@@ -73,42 +73,42 @@ async function loadContext(email) {
         [orgId, sender],
       ).then((r) => r.ok ? r.rows[0] : null),
     ),
-    recipient ? safeQuery(
+    recipient ? safeOrgQuery(orgId,
       `SELECT total_count, first_seen, last_seen FROM sender_recipient_pairs
        WHERE org_id=? AND sender=? AND recipient=? LIMIT 1`,
       [orgId, sender, recipient],
     ).then((r) => r.ok ? (r.rows[0] || null) : null) : Promise.resolve(null),
-    domain ? safeQuery(
+    domain ? safeOrgQuery(orgId,
       `SELECT first_seen, total_emails_from, is_freemail FROM domain_first_seen
        WHERE org_id=? AND domain=? LIMIT 1`,
       [orgId, domain],
     ).then((r) => r.ok ? (r.rows[0] || null) : null) : Promise.resolve(null),
-    safeQuery(
+    safeOrgQuery(orgId,
       `SELECT \`date\`, email_count FROM sender_daily_stats
        WHERE org_id=? AND sender=? AND \`date\` > DATE_SUB(CURDATE(), INTERVAL 7 DAY)
        ORDER BY \`date\` DESC`,
       [orgId, sender],
     ).then((r) => r.ok ? r.rows : []),
-    safeQuery(
+    safeOrgQuery(orgId,
       `SELECT hour_of_day, day_of_week, email_count FROM hourly_distribution
        WHERE org_id=? AND sender=?`,
       [orgId, sender],
     ).then((r) => r.ok ? r.rows : []),
-    safeQuery(
+    safeOrgQuery(orgId,
       `SELECT COUNT(*) AS c FROM email_metadata
        WHERE org_id=? AND sender=? AND \`timestamp\` > NOW() - INTERVAL 1 HOUR`,
       [orgId, sender],
     ).then((r) => r.ok ? Number(r.rows[0]?.c || 0) : 0),
     // Pull org's "known-good" internal domains for lookalike check.
     cached(`orgdom:${orgId}`, 300, () =>
-      safeQuery(
+      safeOrgQuery(orgId,
         `SELECT domain FROM domain_first_seen
          WHERE org_id=? AND total_emails_from >= 10
          ORDER BY total_emails_from DESC LIMIT 25`,
         [orgId],
       ).then((r) => r.ok ? r.rows.map((x) => x.domain) : []),
     ),
-    domain ? safeQuery(
+    domain ? safeOrgQuery(orgId,
       `SELECT
          (SELECT COUNT(*) FROM email_metadata WHERE org_id=? AND sender_domain=?
           AND \`timestamp\` > NOW() - INTERVAL 1 DAY) AS last_day,
@@ -369,7 +369,7 @@ async function persist(email, ctx) {
   const linkCount = ((email.body_text || "").match(URL_RE) || []).length;
   const subjectLen = (email.subject || "").length;
 
-  await safeQuery(
+  await safeOrgQuery(ctx.orgId,
     `INSERT INTO email_metadata
        (org_id, message_id, sender, sender_domain, recipient, \`timestamp\`,
         size_bytes, has_attachment, attachment_count, subject_length,
@@ -380,7 +380,7 @@ async function persist(email, ctx) {
   );
 
   if (ctx.recipient) {
-    await safeQuery(
+    await safeOrgQuery(ctx.orgId,
       `INSERT INTO sender_recipient_pairs
          (org_id, sender, recipient, total_count, last_seen, first_seen)
        VALUES (?, ?, ?, 1, ?, ?)
@@ -391,7 +391,7 @@ async function persist(email, ctx) {
   }
 
   if (ctx.domain) {
-    await safeQuery(
+    await safeOrgQuery(ctx.orgId,
       `INSERT INTO domain_first_seen
          (org_id, domain, first_seen, total_emails_from, is_freemail)
        VALUES (?, ?, ?, 1, ?)
@@ -400,7 +400,7 @@ async function persist(email, ctx) {
     );
   }
 
-  await safeQuery(
+  await safeOrgQuery(ctx.orgId,
     `INSERT INTO sender_daily_stats
        (org_id, sender, \`date\`, email_count, avg_size, attachment_rate, unique_recipients)
      VALUES (?, ?, DATE(?), 1, ?, ?, 1)
@@ -411,7 +411,7 @@ async function persist(email, ctx) {
     [ctx.orgId, ctx.sender, ctx.ts, bodyLen, attCount > 0 ? 1 : 0],
   );
 
-  await safeQuery(
+  await safeOrgQuery(ctx.orgId,
     `INSERT INTO hourly_distribution
        (org_id, sender, hour_of_day, day_of_week, email_count)
      VALUES (?, ?, ?, ?, 1)

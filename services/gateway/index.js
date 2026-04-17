@@ -10,8 +10,9 @@
 import express from "express";
 import { request } from "undici";
 import { Email } from "@etdp/shared/schemas";
-import { safeQuery } from "@etdp/shared/mysql";
+import { safeQuery, safeOrgQuery, provisionOrg } from "@etdp/shared/mysql";
 import { cached } from "@etdp/shared/cache";
+import { produce, kafkaEnabled, TOPIC_DEEP_PATH } from "@etdp/shared/kafka";
 
 const FAST_PRE = ["e1_rspamd"];                        // stage 1 (E1 alone)
 const FAST_MAIN = ["e2_slm", "e3_stats_db", "e4_graph_db"]; // stage 2
@@ -118,7 +119,7 @@ export function aggregate(signals, thresholds, industryWeights) {
 }
 
 async function persistVerdict(email, verdict) {
-  await safeQuery(
+  await safeOrgQuery(email.org_id,
     `INSERT INTO verdicts
        (org_id, message_id, sender, recipient, verdict, label, confidence,
         threat_score, reason, signals, pipeline, fast_path_ms, deep_path_ms)
@@ -152,6 +153,9 @@ app.post("/v1/analyze", async (req, res) => {
   catch (err) { return res.status(400).json({ error: `invalid email payload: ${err.message}` }); }
 
   const orgCtx = await loadOrgContext(email.org_id);
+  // Lazy provision: ensure per-org DB exists before engines query it.
+  // Cheap after first hit (CREATE DATABASE IF NOT EXISTS + in-memory cache).
+  await provisionOrg(email.org_id).catch(() => {});
   const enrichedEmail = { ...email, org_context: orgCtx };
 
   const t0 = process.hrtime.bigint();
@@ -172,18 +176,32 @@ app.post("/v1/analyze", async (req, res) => {
   let deepSignals = [];
   let deepMs = 0;
   const enginesInvoked = [...FAST_PRE, ...FAST_MAIN];
+  let asyncDeepPath = false;
 
   if (fastConfidence < DEEP_PATH_THRESHOLD) {
-    const t1 = process.hrtime.bigint();
-    const deepPayload = { ...enrichedEmail, prior_signals: fastSignals };
-    const deepResponses = await fanout(DEEP_PATH, deepPayload);
-    deepSignals = deepResponses.flatMap((r) => r.signals || []);
-    deepMs = Number(process.hrtime.bigint() - t1) / 1e6;
-    enginesInvoked.push(...DEEP_PATH);
+    // Try the async path first: quarantine + Kafka publish. Deep worker
+    // will update the verdict row when it finishes. Falls back to sync.
+    if (kafkaEnabled()) {
+      const pub = await produce(TOPIC_DEEP_PATH, email.message_id, {
+        email, fast_signals: fastSignals, org_context: orgCtx,
+      });
+      if (pub.ok) asyncDeepPath = true;
+    }
+    if (!asyncDeepPath) {
+      const t1 = process.hrtime.bigint();
+      const deepPayload = { ...enrichedEmail, prior_signals: fastSignals };
+      const deepResponses = await fanout(DEEP_PATH, deepPayload);
+      deepSignals = deepResponses.flatMap((r) => r.signals || []);
+      deepMs = Number(process.hrtime.bigint() - t1) / 1e6;
+      enginesInvoked.push(...DEEP_PATH);
+    }
   }
 
   const allSignals = [...fastSignals, ...deepSignals];
-  const finalAgg = aggregate(allSignals, orgCtx.thresholds, orgCtx.industry_weights);
+  const finalAgg = asyncDeepPath
+    ? { total: fastAgg.total, label: "spam", verdict: "quarantine",
+        reason: `Awaiting deep path (fast score ${fastAgg.total.toFixed(1)}).` }
+    : aggregate(allSignals, orgCtx.thresholds, orgCtx.industry_weights);
 
   const verdict = {
     verdict: finalAgg.verdict,
@@ -200,6 +218,7 @@ app.post("/v1/analyze", async (req, res) => {
       deep_path_ms: Number(deepMs.toFixed(2)),
       engines_invoked: enginesInvoked,
       stats_db_weight: orgCtx.stats_db_weight,
+      async_deep_path: asyncDeepPath,
     },
     metadata: {
       org_id: email.org_id, message_id: email.message_id,
@@ -224,7 +243,7 @@ app.post("/v1/feedback", async (req, res) => {
   if (!valid.includes(action)) {
     return res.status(400).json({ error: `action must be one of ${valid.join(", ")}` });
   }
-  const r = await safeQuery(
+  const r = await safeOrgQuery(org_id,
     `INSERT INTO feedback_labels (org_id, message_id, action, source, notes)
      VALUES (?, ?, ?, ?, ?)`,
     [org_id, message_id, action, source, notes],
@@ -241,7 +260,7 @@ app.get("/v1/verdicts", async (req, res) => {
   if (label) { clauses.push("label = ?"); params.push(label); }
   if (since) { clauses.push("created_at >= ?"); params.push(new Date(since)); }
   const limitN = Math.min(Number(limit) || 50, 500);
-  const r = await safeQuery(
+  const r = await safeOrgQuery(org_id,
     `SELECT id, org_id, message_id, sender, recipient, verdict, label, confidence,
             threat_score, reason, fast_path_ms, deep_path_ms, created_at
      FROM verdicts WHERE ${clauses.join(" AND ")}
@@ -255,7 +274,7 @@ app.get("/v1/verdicts", async (req, res) => {
 app.get("/v1/stats", async (req, res) => {
   const { org_id } = req.query;
   if (!org_id) return res.status(400).json({ error: "org_id required" });
-  const r = await safeQuery(
+  const r = await safeOrgQuery(org_id,
     `SELECT label, verdict, COUNT(*) AS n FROM verdicts WHERE org_id = ?
      GROUP BY label, verdict`,
     [org_id],
@@ -284,7 +303,9 @@ app.post("/v1/orgs", async (req, res) => {
      JSON.stringify(thresholds)],
   );
   if (!r.ok) return res.status(500).json({ error: r.error });
-  res.json({ status: "ok", org_id });
+  const prov = await provisionOrg(org_id);
+  if (!prov.ok) return res.status(500).json({ error: prov.error });
+  res.json({ status: "ok", org_id, db_name: prov.db_name, provisioned: prov.provisioned });
 });
 
 app.put("/v1/orgs/:id/thresholds", async (req, res) => {

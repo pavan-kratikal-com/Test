@@ -83,7 +83,7 @@ engine modules can be imported without starting an HTTP listener.
 
 ## Status
 
-**Phase 1 complete.** What's real vs stubbed:
+**Phase 1 complete + hardened.** What's real vs stubbed:
 
 | Component | State |
 |---|---|
@@ -91,12 +91,14 @@ engine modules can be imported without starting an HTTP listener.
 | **Staged fanout** (E1 → E2 with prior_signals) | real |
 | **Per-org registry** with industry priors + thresholds | real |
 | **Cold-start ramp** (Stats DB signals scale 0→1 over 30 days) | real |
-| **E3 Stats DB** — 25 of 36 signals | real; 11 stubbed with `DATA_DEP` tags (need IdP logs, IP geo, LDAP, threading) |
+| **E3 Stats DB** — 25 of 36 signals | real; 11 stubbed with `DATA_DEP` tags |
 | Verdict persistence + feedback + history APIs | real |
 | Redis cache (Stats DB hot lookups) | real (no-op fallback) |
 | Evaluation framework | real |
-| E1 rspamd, E2 SLM, E4–E9, synthesizer detection logic | stubs — mock signals only |
-| Async deep-path queue (Kafka) | declared in compose, not wired |
+| **Schema-per-tenant MySQL isolation** | real — `etdp_shared` + `etdp_org_<id>` |
+| **Kafka-backed async deep path** | real (Kafka up) / sync-fallback (Kafka down) |
+| **Real rspamd integration** (E1 HTTP translator) | real (RSPAMD_URL set) / fallback grep |
+| E2 SLM, E4–E9, synthesizer detection logic | stubs — mock signals only |
 | Per-org ML fine-tuning | Phase 2 |
 
 See `prd.md` §14 for the phased roadmap.

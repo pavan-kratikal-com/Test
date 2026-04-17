@@ -53,9 +53,13 @@ CREATE TABLE IF NOT EXISTS org_signal_ramp (
     PRIMARY KEY (org_id, source)
 ) ENGINE=InnoDB;
 
--- Index used by the feedback → retrain accumulator (PRD §9.3).
-CREATE INDEX ix_feedback_for_retrain
-    ON feedback_labels (org_id, created_at);
+-- Tracks which per-org databases have been provisioned and migrated.
+CREATE TABLE IF NOT EXISTS org_databases (
+    org_id          VARCHAR(64)  NOT NULL PRIMARY KEY,
+    db_name         VARCHAR(64)  NOT NULL,
+    provisioned_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    migrations_at   VARCHAR(255) NULL
+) ENGINE=InnoDB;
 
 -- Seed a demo org so scaffold runs work out of the box.
 INSERT IGNORE INTO orgs (org_id, name, industry, thresholds) VALUES

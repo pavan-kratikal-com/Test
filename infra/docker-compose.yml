@@ -5,12 +5,15 @@ services:
     image: mysql:8.4
     environment:
       MYSQL_ROOT_PASSWORD: rootpw
-      MYSQL_DATABASE: etdp
       MYSQL_USER: etdp
       MYSQL_PASSWORD: etdp
+    # Grant etdp user global privileges so it can CREATE DATABASE for
+    # lazy per-org provisioning. In prod use a dedicated admin role.
+    command: --default-authentication-plugin=caching_sha2_password
     ports: ["3306:3306"]
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./mysql-grants.sql:/docker-entrypoint-initdb.d/zz-grants.sql:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-prootpw"]
       interval: 5s
@@ -18,14 +21,11 @@ services:
       retries: 20
 
   migrate:
-    build:
-      context: ..
-      dockerfile: Dockerfile.migrate
+    build: { context: .., dockerfile: Dockerfile.migrate }
     environment:
       MYSQL_HOST: mysql
       MYSQL_USER: etdp
       MYSQL_PASSWORD: etdp
-      MYSQL_DATABASE: etdp
     depends_on:
       mysql: { condition: service_healthy }
     restart: "no"
@@ -47,17 +47,23 @@ services:
       ALLOW_PLAINTEXT_LISTENER: "yes"
     ports: ["9092:9092"]
 
+  rspamd:
+    image: vstakhov/rspamd:latest
+    environment:
+      RSPAMD_PASSWORD: "${RSPAMD_PASSWORD:-etdp}"
+    ports: ["11333:11333", "11334:11334"]
+    depends_on: [redis]
+
   gateway:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-      args: { SERVICE: gateway }
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: gateway } }
     environment:
       PORT: "8000"
       MYSQL_HOST: mysql
       MYSQL_USER: etdp
       MYSQL_PASSWORD: etdp
-      MYSQL_DATABASE: etdp
+      MYSQL_MULTI_TENANT: "1"
+      REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: kafka:9092
     ports: ["8000:8000"]
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -72,8 +78,29 @@ services:
       e9_specialized_ml: { condition: service_started }
       synthesizer: { condition: service_started }
 
+  deep_path_worker:
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: deep_path_worker } }
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+      MYSQL_MULTI_TENANT: "1"
+      KAFKA_BROKERS: kafka:9092
+      E5_URL_SCANNER_URL: http://e5_url_scanner:80
+      E6_ATTACHMENT_URL: http://e6_attachment:80
+      E7_VISUAL_URL: http://e7_visual:80
+      E9_SPECIALIZED_ML_URL: http://e9_specialized_ml:80
+      SYNTHESIZER_URL: http://synthesizer:80
+    depends_on:
+      kafka: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
+
   e1_rspamd:
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e1_rspamd } }
+    environment:
+      RSPAMD_URL: http://rspamd:11333
+      RSPAMD_PASSWORD: "${RSPAMD_PASSWORD:-etdp}"
+    depends_on: [rspamd]
   e2_slm:
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e2_slm } }
   e3_stats_db:
@@ -82,7 +109,8 @@ services:
       MYSQL_HOST: mysql
       MYSQL_USER: etdp
       MYSQL_PASSWORD: etdp
-      MYSQL_DATABASE: etdp
+      MYSQL_MULTI_TENANT: "1"
+      REDIS_URL: redis://redis:6379
     depends_on:
       migrate: { condition: service_completed_successfully }
   e4_graph_db:
@@ -91,7 +119,7 @@ services:
       MYSQL_HOST: mysql
       MYSQL_USER: etdp
       MYSQL_PASSWORD: etdp
-      MYSQL_DATABASE: etdp
+      MYSQL_MULTI_TENANT: "1"
     depends_on:
       migrate: { condition: service_completed_successfully }
   e5_url_scanner:

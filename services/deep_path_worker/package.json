@@ -1,13 +1,12 @@
 {
-  "name": "@etdp/e1_rspamd",
+  "name": "@etdp/deep_path_worker",
   "version": "0.1.0",
   "type": "module",
   "main": "index.js",
   "scripts": { "start": "node index.js" },
   "dependencies": {
     "@etdp/shared": "file:../../shared",
-    "express": "^4.21.0",
-    "undici": "^6.20.0",
-    "zod": "^3.23.8"
+    "kafkajs": "^2.2.4",
+    "undici": "^6.20.0"
   }
 }

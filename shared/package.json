@@ -7,10 +7,12 @@
     "./schemas": "./schemas.js",
     "./engineBase": "./engineBase.js",
     "./mysql": "./mysql.js",
-    "./cache": "./cache.js"
+    "./cache": "./cache.js",
+    "./kafka": "./kafka.js"
   },
   "dependencies": {
     "express": "^4.21.0",
+    "kafkajs": "^2.2.4",
     "mysql2": "^3.11.3",
     "redis": "^4.7.0",
     "zod": "^3.23.8"
