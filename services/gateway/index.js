@@ -16,6 +16,8 @@ import { produce, kafkaEnabled, TOPIC_DEEP_PATH } from "@etdp/shared/kafka";
 import { signalsToFeatures } from "@etdp/shared/features";
 import { predictProba } from "@etdp/shared/logreg";
 import { getDeployments } from "@etdp/shared/modelRegistry";
+import { renderStatusPage } from "./statusPage.js";
+import { renderDashboardPage } from "./dashboardPage.js";
 
 const FAST_PRE = ["e1_rspamd"];                        // stage 1 (E1 alone)
 const FAST_MAIN = ["e2_slm", "e3_stats_db", "e4_graph_db"]; // stage 2
@@ -70,7 +72,7 @@ async function loadOrgContext(orgId) {
         known: false,
         industry: "general", timezone: "UTC",
         business_hours_start: 8, business_hours_end: 20,
-        thresholds: { block: 10, quarantine: 5 },
+        thresholds: { block: 15, quarantine: 8 },
         stats_db_weight: 1.0,
         graph_db_weight: 1.0,
         industry_weights: { bec: 1, phishing: 1, malware: 1 },
@@ -110,8 +112,8 @@ export function aggregate(signals, thresholds, industryWeights) {
     if (/wire|transfer|bec|urgency/i.test(s.signal)) w = industryWeights.bec;
     total += (s.score || 0) * w;
   }
-  const blockAt = Number(thresholds.block ?? 10);
-  const qAt = Number(thresholds.quarantine ?? 5);
+  const blockAt = Number(thresholds.block ?? 15);
+  const qAt = Number(thresholds.quarantine ?? 8);
   if (total >= blockAt) {
     return { total, label: "phishing", verdict: "block",
       reason: `Aggregate score ${total.toFixed(1)} ≥ block threshold ${blockAt}.` };
@@ -300,11 +302,12 @@ app.post("/v1/feedback", async (req, res) => {
 });
 
 app.get("/v1/verdicts", async (req, res) => {
-  const { org_id, label, since, limit = "50" } = req.query;
+  const { org_id, label, verdict, since, limit = "50" } = req.query;
   if (!org_id) return res.status(400).json({ error: "org_id required" });
   const clauses = ["org_id = ?"];
   const params = [org_id];
   if (label) { clauses.push("label = ?"); params.push(label); }
+  if (verdict) { clauses.push("verdict = ?"); params.push(verdict); }
   if (since) { clauses.push("created_at >= ?"); params.push(new Date(since)); }
   const limitN = Math.min(Number(limit) || 50, 500);
   const r = await safeOrgQuery(org_id,
@@ -336,7 +339,7 @@ app.post("/v1/orgs", async (req, res) => {
   const {
     org_id, name, industry = "general",
     timezone = "UTC", business_hours_start = 8, business_hours_end = 20,
-    thresholds = { block: 10, quarantine: 5 },
+    thresholds = { block: 15, quarantine: 8 },
   } = req.body || {};
   if (!org_id || !name) return res.status(400).json({ error: "org_id, name required" });
   const r = await safeQuery(
@@ -404,6 +407,203 @@ app.get("/v1/orgs/:id/training_jobs", async (req, res) => {
   );
   if (!r.ok) return res.status(500).json({ error: r.error });
   res.json({ count: r.rows.length, jobs: r.rows });
+});
+
+// ── Org listing (for dashboard dropdown) ──────────────────────────────
+
+app.get("/v1/orgs", async (_req, res) => {
+  const r = await safeQuery("SELECT org_id, name, industry FROM orgs ORDER BY name");
+  res.json(r.ok ? r.rows : []);
+});
+
+// ── Full verdict detail (signals + pipeline + feedback) ───────────────
+
+app.get("/v1/verdicts/:org_id/:message_id", async (req, res) => {
+  const { org_id, message_id } = req.params;
+  const vr = await safeOrgQuery(org_id,
+    `SELECT id, org_id, message_id, sender, recipient, verdict, label, confidence,
+            threat_score, reason, signals, pipeline, fast_path_ms, deep_path_ms, created_at
+     FROM verdicts WHERE org_id = ? AND message_id = ? LIMIT 1`,
+    [org_id, message_id],
+  );
+  if (!vr.ok) return res.status(500).json({ error: vr.error });
+  if (vr.rows.length === 0) return res.status(404).json({ error: "verdict not found" });
+
+  const row = vr.rows[0];
+  row.signals = typeof row.signals === "string" ? JSON.parse(row.signals) : row.signals;
+  row.pipeline = typeof row.pipeline === "string" ? JSON.parse(row.pipeline) : row.pipeline;
+
+  const fr = await safeOrgQuery(org_id,
+    `SELECT action, source, notes, created_at FROM feedback_labels
+     WHERE org_id = ? AND message_id = ? ORDER BY created_at DESC`,
+    [org_id, message_id],
+  );
+
+  res.json({ verdict: row, feedback: fr.ok ? fr.rows : [] });
+});
+
+// ── Dashboard Data APIs ──────────────────────────────────────────────
+
+app.get("/v1/dashboard/timeline", async (req, res) => {
+  const { org_id, days = "7" } = req.query;
+  if (!org_id) return res.status(400).json({ error: "org_id required" });
+  const daysN = Math.min(Number(days) || 7, 90);
+  const r = await safeOrgQuery(org_id,
+    `SELECT DATE(created_at) AS day, COUNT(*) AS value
+     FROM verdicts WHERE org_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+     GROUP BY DATE(created_at) ORDER BY day ASC`,
+    [org_id, daysN],
+  );
+  if (!r.ok) return res.status(500).json({ error: r.error });
+  res.json({ org_id, days: daysN, points: r.rows });
+});
+
+app.get("/v1/dashboard/top-senders", async (req, res) => {
+  const { org_id, limit = "20" } = req.query;
+  if (!org_id) return res.status(400).json({ error: "org_id required" });
+  const limitN = Math.min(Number(limit) || 20, 100);
+  const r = await safeOrgQuery(org_id,
+    `SELECT sender,
+            SUBSTRING_INDEX(sender, '@', -1) AS sender_domain,
+            COUNT(*) AS count,
+            AVG(threat_score) AS avg_score
+     FROM verdicts WHERE org_id = ? AND verdict IN ('block','quarantine')
+     GROUP BY sender ORDER BY avg_score DESC LIMIT ?`,
+    [org_id, limitN],
+  );
+  if (!r.ok) return res.status(500).json({ error: r.error });
+  res.json({ org_id, senders: r.rows });
+});
+
+app.get("/v1/dashboard/users", async (req, res) => {
+  const { org_id } = req.query;
+  if (!org_id) return res.status(400).json({ error: "org_id required" });
+  const r = await safeOrgQuery(org_id,
+    `SELECT recipient,
+            COUNT(*) AS total,
+            SUM(verdict = 'block') AS blocked,
+            SUM(verdict = 'quarantine') AS quarantined,
+            SUM(verdict = 'allow') AS allowed,
+            AVG(threat_score) AS avg_score
+     FROM verdicts WHERE org_id = ?
+     GROUP BY recipient ORDER BY blocked DESC, quarantined DESC LIMIT 50`,
+    [org_id],
+  );
+  if (!r.ok) return res.status(500).json({ error: r.error });
+  res.json({ org_id, users: r.rows });
+});
+
+app.get("/v1/dashboard/vips", async (req, res) => {
+  const { org_id } = req.query;
+  if (!org_id) return res.status(400).json({ error: "org_id required" });
+  const r = await safeOrgQuery(org_id,
+    `SELECT gdn.address, gdn.display_name,
+            COALESCE(gt.trust_score, 0.5) AS trust_score,
+            COALESCE(gn.sent_count, 0) AS sent_count,
+            COALESCE(gn.recv_count, 0) AS recv_count,
+            (SELECT COUNT(*) FROM verdicts v WHERE v.org_id = ? AND v.recipient = gdn.address AND v.verdict IN ('block','quarantine')) AS threat_count
+     FROM graph_display_names gdn
+     LEFT JOIN graph_trust gt ON gt.org_id = gdn.org_id AND gt.address = gdn.address
+     LEFT JOIN graph_nodes gn ON gn.org_id = gdn.org_id AND gn.address = gdn.address
+     WHERE gdn.org_id = ?
+     ORDER BY threat_count DESC, trust_score ASC LIMIT 20`,
+    [org_id, org_id],
+  );
+  // If graph tables don't exist yet, return empty
+  if (!r.ok) return res.json({ org_id, vips: [] });
+  res.json({ org_id, vips: r.rows });
+});
+
+app.get("/v1/dashboard/domains", async (req, res) => {
+  const { org_id } = req.query;
+  if (!org_id) return res.status(400).json({ error: "org_id required" });
+  const r = await safeOrgQuery(org_id,
+    `SELECT domain, first_seen, total_emails_from, is_freemail, avg_threat_score
+     FROM domain_first_seen WHERE org_id = ?
+     ORDER BY avg_threat_score DESC, total_emails_from DESC LIMIT 100`,
+    [org_id],
+  );
+  if (!r.ok) return res.json({ org_id, domains: [] });
+  res.json({ org_id, domains: r.rows });
+});
+
+app.get("/v1/dashboard/urls", async (req, res) => {
+  const { limit = "100" } = req.query;
+  const limitN = Math.min(Number(limit) || 100, 500);
+  const r = await safeQuery(
+    `SELECT url, final_url, redirect_hops, final_status, risk_score, scanned_at
+     FROM url_scan_cache ORDER BY scanned_at DESC LIMIT ?`,
+    [limitN],
+  );
+  if (!r.ok) return res.status(500).json({ error: r.error });
+  res.json({ urls: r.rows });
+});
+
+// ── SOC Analyst Dashboard ─────────────────────────────────────────────
+
+app.get("/admin/dashboard", (_req, res) => {
+  res.setHeader("Content-Type", "text/html");
+  res.send(renderDashboardPage());
+});
+
+// ── Service Status Dashboard (admin) ────────────────────────────────────
+
+const ALL_SERVICES = Object.fromEntries([
+  ...Object.entries(ENGINE_HOSTS),
+  ["deep_path_worker", process.env.DEEP_PATH_WORKER_URL || "http://deep_path_worker:80"],
+]);
+
+const VALID_SERVICE_NAMES = new Set(Object.keys(ALL_SERVICES));
+
+app.get("/admin/status", async (_req, res) => {
+  const results = await Promise.all(
+    Object.entries(ALL_SERVICES).map(async ([name, baseUrl]) => {
+      const start = Date.now();
+      try {
+        const { statusCode, body } = await request(`${baseUrl}/health`, {
+          method: "GET",
+          headersTimeout: 3000,
+          bodyTimeout: 3000,
+        });
+        const text = await body.text();
+        const elapsed = Date.now() - start;
+        if (statusCode >= 400) {
+          return { name, status: "down", latency_ms: elapsed, error: `HTTP ${statusCode}` };
+        }
+        return { name, status: "ok", latency_ms: elapsed };
+      } catch (err) {
+        return { name, status: "down", latency_ms: Date.now() - start, error: err.message };
+      }
+    }),
+  );
+  res.json(results);
+});
+
+app.post("/admin/restart/:service", async (req, res) => {
+  const { service } = req.params;
+  if (!VALID_SERVICE_NAMES.has(service)) {
+    return res.status(400).json({ error: `unknown service: ${service}` });
+  }
+  const baseUrl = ALL_SERVICES[service];
+  try {
+    const { statusCode, body } = await request(`${baseUrl}/shutdown`, {
+      method: "POST",
+      headersTimeout: 5000,
+      bodyTimeout: 5000,
+    });
+    await body.text();
+    if (statusCode >= 400) {
+      return res.status(502).json({ error: `shutdown returned HTTP ${statusCode}` });
+    }
+    res.json({ status: "restarting", service });
+  } catch (err) {
+    res.status(502).json({ error: `failed to reach ${service}: ${err.message}` });
+  }
+});
+
+app.get("/admin/ui", (_req, res) => {
+  res.setHeader("Content-Type", "text/html");
+  res.send(renderStatusPage());
 });
 
 if (process.env.ETDP_NO_LISTEN !== "1") {

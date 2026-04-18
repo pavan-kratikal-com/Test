@@ -9,7 +9,7 @@ services:
       MYSQL_PASSWORD: etdp
     # Grant etdp user global privileges so it can CREATE DATABASE for
     # lazy per-org provisioning. In prod use a dedicated admin role.
-    command: --default-authentication-plugin=caching_sha2_password
+    command: --mysql-native-password=ON
     ports: ["3306:3306"]
     volumes:
       - mysql_data:/var/lib/mysql
@@ -35,26 +35,27 @@ services:
     ports: ["6379:6379"]
 
   kafka:
-    image: bitnami/kafka:3.7
+    image: apache/kafka:latest
     environment:
-      KAFKA_CFG_NODE_ID: "1"
-      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
-      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
-      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
-      ALLOW_PLAINTEXT_LISTENER: "yes"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
     ports: ["9092:9092"]
 
   rspamd:
-    image: vstakhov/rspamd:latest
+    image: rspamd/rspamd:latest
     environment:
       RSPAMD_PASSWORD: "${RSPAMD_PASSWORD:-etdp}"
     ports: ["11333:11333", "11334:11334"]
     depends_on: [redis]
 
   gateway:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: gateway } }
     environment:
       PORT: "8000"
@@ -79,6 +80,7 @@ services:
       synthesizer: { condition: service_started }
 
   deep_path_worker:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: deep_path_worker } }
     environment:
       MYSQL_HOST: mysql
@@ -96,14 +98,23 @@ services:
       migrate: { condition: service_completed_successfully }
 
   e1_rspamd:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e1_rspamd } }
     environment:
       RSPAMD_URL: http://rspamd:11333
       RSPAMD_PASSWORD: "${RSPAMD_PASSWORD:-etdp}"
     depends_on: [rspamd]
   e2_slm:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e2_slm } }
+    environment:
+      SLM_BASE_URL: "${SLM_BASE_URL:-}"
+      SLM_API_KEY: "${SLM_API_KEY:-}"
+      SLM_MODEL: "${SLM_MODEL:-llama3}"
+      SLM_TIMEOUT: "${SLM_TIMEOUT:-8000}"
+      SLM_ENABLED: "${SLM_ENABLED:-0}"
   e3_stats_db:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e3_stats_db } }
     environment:
       MYSQL_HOST: mysql
@@ -114,6 +125,7 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
   e4_graph_db:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e4_graph_db } }
     environment:
       MYSQL_HOST: mysql
@@ -123,16 +135,22 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
   e5_url_scanner:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e5_url_scanner } }
   e6_attachment:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e6_attachment } }
   e7_visual:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e7_visual } }
   e8_sandbox:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e8_sandbox } }
   e9_specialized_ml:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e9_specialized_ml } }
   synthesizer:
+    restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: synthesizer } }
 
 volumes:

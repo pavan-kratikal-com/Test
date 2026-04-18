@@ -9,7 +9,7 @@ export function analyze(email) {
     signals.push({
       engine: "visual",
       signal: "credential_form_detected",
-      score: 3.0,
+      score: 4.5,
       detail: {},
     });
   }

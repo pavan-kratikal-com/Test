@@ -5,10 +5,10 @@ import express from "express";
 export function synthesize(signals = []) {
   const total = signals.reduce((acc, s) => acc + (s.score || 0), 0);
   let verdict, label, reason;
-  if (total >= 10) {
+  if (total >= 15) {
     verdict = "block"; label = "phishing";
     reason = "High aggregate threat score from multiple engines.";
-  } else if (total >= 5) {
+  } else if (total >= 8) {
     verdict = "quarantine"; label = "spam";
     reason = "Moderate threat indicators; held for review.";
   } else {

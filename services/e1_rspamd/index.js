@@ -75,8 +75,11 @@ function rspamdToSignals(rspamdResp) {
   const symbols = rspamdResp?.symbols || {};
   for (const name of Object.keys(symbols)) {
     const sym = symbols[name];
-    const score = Number(sym?.score || 0);
-    if (score === 0 && !/^(BAYES_SPAM|BAYES_HAM)$/.test(name)) continue;
+    const rawScore = Number(sym?.score || 0);
+    // Scale rspamd scores by 1.5× to map to ETDP's rspamd-aligned thresholds
+    // (5=header, 8=quarantine, 15=block).
+    const score = rawScore * 1.5;
+    if (rawScore === 0 && !/^(BAYES_SPAM|BAYES_HAM)$/.test(name)) continue;
     signals.push({
       engine: "rspamd",
       signal: name,
@@ -104,10 +107,10 @@ function fallbackAnalyze(email) {
   const headers = JSON.stringify(email.headers || {}).toLowerCase();
   const signals = [];
   if (headers.includes("spf=fail")) {
-    signals.push({ engine: "rspamd", signal: "SPF_FAIL", score: 2.0, detail: {} });
+    signals.push({ engine: "rspamd", signal: "SPF_FAIL", score: 3.0, detail: {} });
   }
   if (headers.includes("dmarc=fail")) {
-    signals.push({ engine: "rspamd", signal: "DMARC_POLICY_REJECT", score: 3.0, detail: {} });
+    signals.push({ engine: "rspamd", signal: "DMARC_POLICY_REJECT", score: 4.5, detail: {} });
   }
   return signals;
 }

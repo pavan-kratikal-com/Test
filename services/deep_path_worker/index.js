@@ -38,8 +38,8 @@ function reassess(allSignals, thresholds, weights) {
     if (/wire|transfer|bec|urgency/i.test(s.signal)) w = weights.bec;
     total += (s.score || 0) * w;
   }
-  const blockAt = Number(thresholds.block ?? 10);
-  const qAt = Number(thresholds.quarantine ?? 5);
+  const blockAt = Number(thresholds.block ?? 15);
+  const qAt = Number(thresholds.quarantine ?? 8);
   if (total >= blockAt) {
     return { total, label: "phishing", verdict: "block",
       reason: `Deep path confirmed ${total.toFixed(1)} ≥ ${blockAt}.` };
@@ -64,7 +64,7 @@ async function processMessage(message) {
   const allSignals = [...(fast_signals || []), ...deepSignals];
 
   const weights = org_context?.industry_weights || { bec: 1, phishing: 1, malware: 1 };
-  const thresholds = org_context?.thresholds || { block: 10, quarantine: 5 };
+  const thresholds = org_context?.thresholds || { block: 15, quarantine: 8 };
   const agg = reassess(allSignals, thresholds, weights);
   const deepMs = Number(process.hrtime.bigint() - t0) / 1e6;
 

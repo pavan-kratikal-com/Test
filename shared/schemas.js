@@ -20,7 +20,7 @@ export const OrgContext = z.object({
   business_hours_start: z.number().int().default(8),
   business_hours_end: z.number().int().default(20),
   stats_db_weight: z.number().default(1.0),
-  thresholds: z.record(z.number()).default({ block: 10, quarantine: 5 }),
+  thresholds: z.record(z.number()).default({ block: 15, quarantine: 8 }),
 }).partial();
 
 export const Email = z.object({

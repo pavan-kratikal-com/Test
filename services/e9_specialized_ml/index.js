@@ -208,15 +208,15 @@ function detectMimeAnomalies(email) {
   // Depth: how many distinct multipart boundaries appear?
   const boundaries = [...new Set((raw.match(/boundary\s*=\s*["']?[^"'\r\n;]+/gi) || []))];
   if (boundaries.length >= 4) {
-    signals.push(sig("mime_tree_deep", 1.0, { boundary_count: boundaries.length }));
+    signals.push(sig("mime_tree_deep", 1.5, { boundary_count: boundaries.length }));
   }
   if (boundaries.length >= 6) {
-    signals.push(sig("nested_multipart_abuse", 1.5, { boundary_count: boundaries.length }));
+    signals.push(sig("nested_multipart_abuse", 2.25, { boundary_count: boundaries.length }));
   }
   // Content-type mismatch: declared multipart but no boundary, or vice versa.
   const topType = raw.match(/^Content-Type:\s*([\w\/-]+)/im)?.[1];
   if (topType === "multipart" && boundaries.length === 0) {
-    signals.push(sig("content_type_mismatch", 1.5,
+    signals.push(sig("content_type_mismatch", 2.25,
       { declared: "multipart", actual: "no_boundary" }));
   }
   return signals;
@@ -230,36 +230,36 @@ export function analyze(email) {
 
   // Homoglyph group
   if (domain && hasMixedScript(domain)) {
-    signals.push(sig("mixed_script_domain", 3.0, { domain }));
+    signals.push(sig("mixed_script_domain", 4.5, { domain }));
   }
   const subjConf = detectConfusable(email.subject || "");
   const domConf = domain ? detectConfusable(domain) : [];
   if (subjConf.length + domConf.length > 0) {
-    signals.push(sig("confusable_chars", 2.0,
+    signals.push(sig("confusable_chars", 3.0,
       { subject: subjConf, domain: domConf }));
   }
   if (domain) {
     const lookalike = idnLookalikeBrand(domain);
-    if (lookalike) signals.push(sig("idn_lookalike", 3.0, lookalike));
+    if (lookalike) signals.push(sig("idn_lookalike", 4.5, lookalike));
   }
 
   // Header group
   const hOrder = headerOrderAnomaly(email.headers);
-  if (hOrder) signals.push(sig("header_order_anomaly", 0.7, hOrder));
+  if (hOrder) signals.push(sig("header_order_anomaly", 1.05, hOrder));
   const hCombo = unusualHeaderCombo(email.headers);
-  if (hCombo) signals.push(sig("unusual_header_combo", 1.5, hCombo));
+  if (hCombo) signals.push(sig("unusual_header_combo", 2.25, hCombo));
   const rcvForged = receivedChainForged(email.headers);
-  if (rcvForged) signals.push(sig("received_chain_forged", 2.0, rcvForged));
+  if (rcvForged) signals.push(sig("received_chain_forged", 3.0, rcvForged));
   const midAnom = messageIdFormatAnomaly(email.headers, email.sender);
-  if (midAnom) signals.push(sig("message_id_format_anomaly", 1.0, midAnom));
+  if (midAnom) signals.push(sig("message_id_format_anomaly", 1.5, midAnom));
 
   // Encoding group
   const b64 = base64BodyObfuscation(email);
-  if (b64) signals.push(sig("base64_content_obfuscation", 1.5, b64));
+  if (b64) signals.push(sig("base64_content_obfuscation", 2.25, b64));
   const qp = quotedPrintableAbuse(email);
-  if (qp) signals.push(sig("quoted_printable_abuse", 1.0, qp));
+  if (qp) signals.push(sig("quoted_printable_abuse", 1.5, qp));
   const charset = exoticCharset(email);
-  if (charset) signals.push(sig("exotic_charset", 1.0, charset));
+  if (charset) signals.push(sig("exotic_charset", 1.5, charset));
 
   // Structural group
   signals.push(...detectMimeAnomalies(email));

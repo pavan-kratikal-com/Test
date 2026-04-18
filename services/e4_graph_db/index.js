@@ -102,29 +102,29 @@ function extractSignals(email, ctx, orgCtx = {}) {
 
   // ── Trust scoring ──────────────────────────────────────────────────
   if (ctx.trust && ctx.trust.trust_score < 0.2) {
-    signals.push(sig("trust_score_low", 1.5,
+    signals.push(sig("trust_score_low", 2.25,
       { trust_score: ctx.trust.trust_score }));
   }
   if (ctx.senderNode && Number(ctx.senderNode.total_sent || 0) < 3
       && Number(ctx.senderNode.total_received || 0) < 3) {
-    signals.push(sig("frequency_weight_low", 0.8,
+    signals.push(sig("frequency_weight_low", 1.2,
       { sent: ctx.senderNode.total_sent, received: ctx.senderNode.total_received }));
   }
   if (ctx.recipient && ctx.edge && ctx.reciprocal === 0 && Number(ctx.edge.count) >= 3) {
-    signals.push(sig("no_reciprocity", 1.0,
+    signals.push(sig("no_reciprocity", 1.5,
       { src_sent: ctx.edge.count, reply_count: 0 }));
   }
   if (ctx.senderNode) {
     const ageDays = (Date.now() - new Date(ctx.senderNode.first_seen).getTime()) / 86400000;
     if (ageDays < 7) {
-      signals.push(sig("young_relationship", 0.7,
+      signals.push(sig("young_relationship", 1.05,
         { first_seen_days_ago: Math.round(ageDays) }));
     }
   }
   if (ctx.senderNode) {
     const dormantDays = (Date.now() - new Date(ctx.senderNode.last_seen).getTime()) / 86400000;
     if (dormantDays > 90) {
-      signals.push(sig("trust_decay_dormant", 1.2,
+      signals.push(sig("trust_decay_dormant", 1.8,
         { dormant_days: Math.round(dormantDays) }));
     }
   }
@@ -133,34 +133,34 @@ function extractSignals(email, ctx, orgCtx = {}) {
   const senderKnown = ctx.senderNode != null;
   const senderIsExternal = ctx.senderNode ? ctx.senderNode.is_internal === 0 : true;
   if (!senderKnown && senderIsExternal) {
-    signals.push(sig("first_time_external_sender", 1.5));
+    signals.push(sig("first_time_external_sender", 2.25));
   }
   if (!ctx.edge && ctx.recipient) {
-    signals.push(sig("first_time_pair_graph", 0.8,
+    signals.push(sig("first_time_pair_graph", 1.2,
       { sender: ctx.sender, recipient: ctx.recipient }));
   }
   if (ctx.reciprocal >= 5 && (!ctx.edge || Number(ctx.edge.count) === 0)) {
     // Recipient normally emails sender, not the reverse → direction reversal.
-    signals.push(sig("direction_reversal", 1.8,
+    signals.push(sig("direction_reversal", 2.7,
       { reverse_count: ctx.reciprocal }));
   }
   if (ctx.edge && Number(ctx.edge.count) >= 20) {
     const lastSeen = new Date(ctx.edge.last_seen);
     const daysSince = (Date.now() - lastSeen.getTime()) / 86400000;
     if (daysSince > 21) {
-      signals.push(sig("pattern_break", 0.9,
+      signals.push(sig("pattern_break", 1.35,
         { pair_count: ctx.edge.count, gap_days: Math.round(daysSince) }));
     }
   }
   if (ctx.last48hBurst >= 10 && !ctx.senderNode) {
-    signals.push(sig("new_contact_burst", 2.0,
+    signals.push(sig("new_contact_burst", 3.0,
       { last_48h_distinct_contacts: ctx.last48hBurst }));
   }
   if (ctx.senderNode) {
     const dormantDays = (Date.now() - new Date(ctx.senderNode.last_seen).getTime()) / 86400000;
     const totalPrior = Number(ctx.senderNode.total_sent || 0);
     if (dormantDays > 30 && totalPrior >= 5) {
-      signals.push(sig("re_emergence_after_dormancy", 1.5,
+      signals.push(sig("re_emergence_after_dormancy", 2.25,
         { dormant_days: Math.round(dormantDays), total_sent: totalPrior }));
     }
   }
@@ -169,14 +169,14 @@ function extractSignals(email, ctx, orgCtx = {}) {
   if (ctx.displayHit && ctx.displayHit.canonical_address !== ctx.sender) {
     // Same display name used by a VIP/known canonical address, but this
     // sender is different → exec impersonation.
-    const score = ctx.displayHit.is_vip ? 3.0 : 1.5;
+    const score = ctx.displayHit.is_vip ? 4.5 : 2.25;
     signals.push(sig("vip_display_name_mismatch", score, {
       display_name: ctx.display,
       expected: ctx.displayHit.canonical_address,
       actual: ctx.sender,
       is_vip: Boolean(ctx.displayHit.is_vip),
     }));
-    if (ctx.displayHit.is_vip) signals.push(sig("executive_impersonation", 2.5,
+    if (ctx.displayHit.is_vip) signals.push(sig("executive_impersonation", 3.75,
       { display_name: ctx.display, actual: ctx.sender }));
   }
   // cross_department_contact — DATA_DEP (needs LDAP department tags).
@@ -186,20 +186,20 @@ function extractSignals(email, ctx, orgCtx = {}) {
   if (ctx.senderNode && ctx.internalCount > 0
       && ctx.senderNode.is_internal === 1
       && ctx.last48hBurst >= Math.max(20, ctx.internalCount * 0.5)) {
-    signals.push(sig("compromised_account_spray", 2.8,
+    signals.push(sig("compromised_account_spray", 4.2,
       { recent_unique_recipients: ctx.last48hBurst, internal_nodes: ctx.internalCount }));
   }
   // cluster_boundary_cross, isolated_node_active, multi_cluster_spray — DATA_DEP (need clique mining).
 
   // ── Temporal graph ─────────────────────────────────────────────────
   if (!ctx.senderNode && ctx.last48hBurst >= 5) {
-    signals.push(sig("sudden_new_contact_burst", 1.5,
+    signals.push(sig("sudden_new_contact_burst", 2.25,
       { contacts_48h: ctx.last48hBurst }));
   }
   if (ctx.edge && Number(ctx.edge.count) > 0) {
     const daysSinceLast = (Date.now() - new Date(ctx.edge.last_seen).getTime()) / 86400000;
     if (daysSinceLast > 60 && Number(ctx.edge.count) >= 5) {
-      signals.push(sig("dormant_reactivation", 1.0,
+      signals.push(sig("dormant_reactivation", 1.5,
         { pair_count: ctx.edge.count, dormant_days: Math.round(daysSinceLast) }));
     }
   }
@@ -209,7 +209,7 @@ function extractSignals(email, ctx, orgCtx = {}) {
     const ageDays = Math.max(1, (Date.now() - firstSeen.getTime()) / 86400000);
     const rate = Number(ctx.edge.count) / ageDays;
     if (rate > 5 && ageDays < 14) {
-      signals.push(sig("edge_frequency_acceleration", 0.9,
+      signals.push(sig("edge_frequency_acceleration", 1.35,
         { rate_per_day: Number(rate.toFixed(2)), age_days: Math.round(ageDays) }));
     }
   }
@@ -217,7 +217,7 @@ function extractSignals(email, ctx, orgCtx = {}) {
   // ── Identity resolution ────────────────────────────────────────────
   if (ctx.displayHit && ctx.displayHit.canonical_address !== ctx.sender
       && !ctx.displayHit.is_vip) {
-    signals.push(sig("display_name_reuse", 1.0,
+    signals.push(sig("display_name_reuse", 1.5,
       { display_name: ctx.display,
         canonical: ctx.displayHit.canonical_address,
         actual: ctx.sender }));

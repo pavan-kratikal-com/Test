@@ -12,7 +12,7 @@ export function analyze(email) {
       signals.push({
         engine: "attachment",
         signal: "dangerous_extension",
-        score: 4.0,
+        score: 6.0,
         detail: { filename: name },
       });
     }

@@ -11,7 +11,7 @@ test("synthesize: no signals → allow/ham", () => {
 });
 
 test("synthesize: mid score → quarantine/spam", () => {
-  const v = synthesize([{ score: 6 }]);
+  const v = synthesize([{ score: 9 }]);
   assert.equal(v.verdict, "quarantine");
   assert.equal(v.label, "spam");
 });

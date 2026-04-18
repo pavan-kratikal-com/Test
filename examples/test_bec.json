@@ -1,0 +1,11 @@
+{
+  "org_id": "org_demo_001",
+  "message_id": "<bec001@ceo-company.xyz>",
+  "sender": "ceo@ceo-company.xyz",
+  "recipients": ["accounts@example.com"],
+  "subject": "Confidential - Wire Transfer Required Today",
+  "body_text": "Hi, I need you to process an urgent wire transfer of $47,500 to the following account before end of day. This is confidential - do not discuss with anyone else. Account: 8827301944 Routing: 021000021. Confirm once done. Sent from my iPhone",
+  "body_html": "",
+  "headers": { "Authentication-Results": "spf=none dmarc=none", "Reply-To": "ceo-private@gmail.com" },
+  "attachments": []
+}

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { aggregate } from "../services/gateway/index.js";
 
 const NEUTRAL = { bec: 1, phishing: 1, malware: 1 };
-const DEFAULT_THRESH = { block: 10, quarantine: 5 };
+const DEFAULT_THRESH = { block: 15, quarantine: 8 };
 
 test("aggregate: empty signals → allow/ham", () => {
   const r = aggregate([], DEFAULT_THRESH, NEUTRAL);
@@ -21,7 +21,7 @@ test("aggregate: score below quarantine threshold → allow", () => {
 });
 
 test("aggregate: score in quarantine band → quarantine/spam", () => {
-  const r = aggregate([{ signal: "x", score: 6 }], DEFAULT_THRESH, NEUTRAL);
+  const r = aggregate([{ signal: "x", score: 9 }], DEFAULT_THRESH, NEUTRAL);
   assert.equal(r.verdict, "quarantine");
   assert.equal(r.label, "spam");
 });
@@ -54,27 +54,27 @@ test("aggregate: industry BEC weight scales 'wire transfer' signals", () => {
 test("aggregate: phishing signals scaled by industry phishing_weight", () => {
   const heavyPhishing = { bec: 1, phishing: 2, malware: 1 };
   const r = aggregate(
-    [{ signal: "DMARC_POLICY_REJECT", score: 3 },
-     { signal: "credential_form_detected", score: 3 }],
+    [{ signal: "DMARC_POLICY_REJECT", score: 4.5 },
+     { signal: "credential_form_detected", score: 4.5 }],
     DEFAULT_THRESH, heavyPhishing,
   );
-  // Both match phishing regex (DMARC, credential). Total: 3*2 + 3*2 = 12
-  assert.equal(r.total, 12);
+  // Both match phishing regex (DMARC, credential). Total: 4.5*2 + 4.5*2 = 18
+  assert.equal(r.total, 18);
   assert.equal(r.verdict, "block");
 });
 
 test("aggregate: malware signals scaled by malware_weight", () => {
   const heavyMalware = { bec: 1, phishing: 1, malware: 3 };
   const r = aggregate(
-    [{ signal: "dangerous_extension", score: 4 }],
+    [{ signal: "dangerous_extension", score: 6 }],
     DEFAULT_THRESH, heavyMalware,
   );
-  assert.equal(r.total, 12);
+  assert.equal(r.total, 18);
   assert.equal(r.verdict, "block");
 });
 
 test("aggregate: reason string includes score and threshold", () => {
   const r = aggregate([{ signal: "x", score: 15 }], DEFAULT_THRESH, NEUTRAL);
   assert.match(r.reason, /15\.0/);
-  assert.match(r.reason, /block threshold 10/);
+  assert.match(r.reason, /block threshold 15/);
 });

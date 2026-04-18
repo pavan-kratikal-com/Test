@@ -116,40 +116,40 @@ function analyzeStaticUrl(u) {
   if (!u) return signals;
 
   if (hasIpHost(u)) {
-    signals.push(sig("url_numeric_ip", 2.0, { host: u.hostname }));
+    signals.push(sig("url_numeric_ip", 3.0, { host: u.hostname }));
   }
   if (hasIdn(u)) {
-    signals.push(sig("domain_idn_homograph", 2.0, { host: u.hostname }));
+    signals.push(sig("domain_idn_homograph", 3.0, { host: u.hostname }));
   }
   if (u.hostname.split(".").length > 4) {
-    signals.push(sig("domain_excessive_subdomains", 1.0,
+    signals.push(sig("domain_excessive_subdomains", 1.5,
       { subdomain_count: u.hostname.split(".").length - 2 }));
   }
   if (isDgaLike(u.hostname)) {
-    signals.push(sig("domain_dga_like", 1.5, { host: u.hostname }));
+    signals.push(sig("domain_dga_like", 2.25, { host: u.hostname }));
   }
   const tldHit = SUSPICIOUS_TLDS.find((tld) => u.hostname.endsWith(tld));
   if (tldHit) {
-    signals.push(sig("suspicious_tld", 2.0, { tld: tldHit, host: u.hostname }));
+    signals.push(sig("suspicious_tld", 3.0, { tld: tldHit, host: u.hostname }));
   }
   if (u.username || u.password) {
-    signals.push(sig("url_user_password", 2.5, { userinfo: true }));
+    signals.push(sig("url_user_password", 3.75, { userinfo: true }));
   }
   if (u.protocol === "data:") {
-    signals.push(sig("url_data_uri", 2.5));
+    signals.push(sig("url_data_uri", 3.75));
   }
   if (/[A-Za-z0-9+/=]{60,}/.test(u.pathname)) {
-    signals.push(sig("url_base64_payload", 1.5));
+    signals.push(sig("url_base64_payload", 2.25));
   }
   if (u.pathname.length > 200) {
-    signals.push(sig("url_abnormal_path_length", 0.8,
+    signals.push(sig("url_abnormal_path_length", 1.2,
       { path_length: u.pathname.length }));
   }
   if (URL_SHORTENERS.has(u.hostname)) {
-    signals.push(sig("url_shortener", 1.0, { service: u.hostname }));
+    signals.push(sig("url_shortener", 1.5, { service: u.hostname }));
   }
   if (LOCAL_BLOCKLIST.has(u.hostname)) {
-    signals.push(sig("reputation_blocklist_hit", 4.0,
+    signals.push(sig("reputation_blocklist_hit", 6.0,
       { host: u.hostname, source: "local" }));
   }
   return signals;
@@ -207,7 +207,7 @@ async function analyzeLandingPage(url) {
   } catch { return signals; }
 
   if (/<input[^>]+type=["']?password/i.test(html)) {
-    signals.push(sig("landing_credential_form", 3.0));
+    signals.push(sig("landing_credential_form", 4.5));
   }
   const formMatch = html.match(/<form[^>]+action=["']([^"']+)/i);
   if (formMatch) {
@@ -217,16 +217,16 @@ async function analyzeLandingPage(url) {
       const pageReg = registrableDomain(new URL(url).hostname);
       const actReg = registrableDomain(new URL(absAction).hostname);
       if (pageReg !== actReg) {
-        signals.push(sig("landing_form_domain_mismatch", 2.5,
+        signals.push(sig("landing_form_domain_mismatch", 3.75,
           { page_domain: pageReg, form_action_domain: actReg }));
       }
     } catch { /* ignore */ }
   }
   if (/eval\s*\(|String\.fromCharCode|unescape\s*\(/i.test(html)) {
-    signals.push(sig("landing_obfuscated_js", 1.5));
+    signals.push(sig("landing_obfuscated_js", 2.25));
   }
   if (/<iframe[^>]+(?:style=["'][^"']*display\s*:\s*none|hidden)/i.test(html)) {
-    signals.push(sig("landing_hidden_iframe", 1.5));
+    signals.push(sig("landing_hidden_iframe", 2.25));
   }
   return signals;
 }
@@ -257,11 +257,11 @@ async function scanUrl(rawUrl) {
   if (u && /^https?:$/.test(u.protocol)) {
     redirResult = await followRedirects(rawUrl);
     if (redirResult.chain.length - 1 >= 3) {
-      redirectSignals.push(sig("redirect_chain_long", 2.0,
+      redirectSignals.push(sig("redirect_chain_long", 3.0,
         { hops: redirResult.chain.length - 1 }));
     }
     if (redirResult.domains.size >= 2) {
-      redirectSignals.push(sig("redirect_domain_hops", 1.5,
+      redirectSignals.push(sig("redirect_domain_hops", 2.25,
         { domain_hops: redirResult.domains.size }));
     }
     if (redirResult.finalUrl !== rawUrl) {

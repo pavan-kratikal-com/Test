@@ -12,6 +12,12 @@ export function makeApp(engineName, analyzeFn) {
     res.json({ status: "ok", engine: engineName });
   });
 
+  app.post("/shutdown", (_req, res) => {
+    console.log(`[${engineName}] shutdown requested — exiting in 500ms`);
+    res.json({ status: "shutting_down", engine: engineName });
+    setTimeout(() => process.exit(1), 500);
+  });
+
   app.post("/analyze", async (req, res) => {
     const start = process.hrtime.bigint();
     let parsed;

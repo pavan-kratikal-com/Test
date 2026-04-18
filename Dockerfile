@@ -6,13 +6,16 @@ ENV NODE_ENV=production
 
 WORKDIR /app
 
-# Shared package first so the install step caches across services.
+# Copy shared package and install it
 COPY shared /app/shared
+RUN cd /app/shared && npm install --omit=dev --no-audit --no-fund
+
+# Copy service package.json and fix the shared dependency path
 COPY services/${SERVICE}/package.json /app/service/package.json
 
-# Install with the relative file: link to /app/shared.
 WORKDIR /app/service
-RUN npm install --omit=dev --no-audit --no-fund
+RUN sed -i 's|file:../../shared|file:/app/shared|g' package.json && \
+    npm install --omit=dev --no-audit --no-fund
 
 COPY services/${SERVICE} /app/service
 
