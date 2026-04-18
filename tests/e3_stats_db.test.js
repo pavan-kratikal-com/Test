@@ -189,3 +189,185 @@ test("size_distribution_anomaly fires when body 3× larger than average", () => 
   }));
   assert.ok(s.some((x) => x.signal === "size_distribution_anomaly"));
 });
+
+// ── New signals tests ─────────────────────────────────────────────────
+
+test("daily_count_spike uses MAD-based z-score and fires on spike", () => {
+  const s = extractSignals(email(), ctx({
+    senderDaily: [
+      { date: "2026-04-17", email_count: 50 },
+      { date: "2026-04-16", email_count: 2 },
+      { date: "2026-04-15", email_count: 3 },
+      { date: "2026-04-14", email_count: 2 },
+      { date: "2026-04-13", email_count: 3 },
+    ],
+  }));
+  const spike = s.find((x) => x.signal === "daily_count_spike");
+  assert.ok(spike, "daily_count_spike should fire");
+  assert.equal(spike.score, 3.75);
+  assert.ok(spike.detail.modified_z > 3.5);
+});
+
+test("daily_count_spike does NOT fire when counts are uniform", () => {
+  const s = extractSignals(email(), ctx({
+    senderDaily: [
+      { date: "2026-04-17", email_count: 3 },
+      { date: "2026-04-16", email_count: 3 },
+      { date: "2026-04-15", email_count: 3 },
+    ],
+  }));
+  assert.equal(s.some((x) => x.signal === "daily_count_spike"), false);
+});
+
+test("sender_local_entropy fires for high-entropy local-part", () => {
+  // Long random-looking address with many distinct chars → high Shannon entropy > 4.0
+  const addr = "x9k2m4p7q1w3z8r6t5u0v@evil.com";
+  const s = extractSignals(
+    email({ sender: addr }),
+    ctx({ sender: addr, domain: "evil.com" }),
+  );
+  assert.ok(s.some((x) => x.signal === "sender_local_entropy"));
+});
+
+test("sender_local_entropy does NOT fire for normal local-part", () => {
+  const s = extractSignals(
+    email({ sender: "john.smith@company.com" }),
+    ctx({ sender: "john.smith@company.com", domain: "company.com" }),
+  );
+  assert.equal(s.some((x) => x.signal === "sender_local_entropy"), false);
+});
+
+test("reply_to_domain_mismatch fires when Reply-To domain differs", () => {
+  const s = extractSignals(
+    email({ sender: "ceo@legit.com", headers: { reply_to: "ceo@evil.com" } }),
+    ctx({ sender: "ceo@legit.com", domain: "legit.com" }),
+  );
+  const m = s.find((x) => x.signal === "reply_to_domain_mismatch");
+  assert.ok(m);
+  assert.equal(m.detail.reply_to_domain, "evil.com");
+});
+
+test("reply_to_domain_mismatch does NOT fire when domains match", () => {
+  const s = extractSignals(
+    email({ sender: "ceo@legit.com", headers: { reply_to: "ceo@legit.com" } }),
+    ctx({ sender: "ceo@legit.com", domain: "legit.com" }),
+  );
+  assert.equal(s.some((x) => x.signal === "reply_to_domain_mismatch"), false);
+});
+
+test("payloadless_financial fires with financial keywords and no links/attachments", () => {
+  const s = extractSignals(
+    email({ body_text: "Please process the wire transfer immediately", attachments: [] }),
+    ctx(),
+  );
+  assert.ok(s.some((x) => x.signal === "payloadless_financial"));
+});
+
+test("payloadless_financial does NOT fire when URLs present", () => {
+  const s = extractSignals(
+    email({ body_text: "Invoice at https://example.com/pay", attachments: [] }),
+    ctx(),
+  );
+  assert.equal(s.some((x) => x.signal === "payloadless_financial"), false);
+});
+
+test("recipient_fanout_spike fires when 24h fanout exceeds 3× daily median", () => {
+  const s = extractSignals(email(), ctx({
+    recipientFanout24h: 30,
+    senderDaily: [
+      { date: "2026-04-17", email_count: 3 },
+      { date: "2026-04-16", email_count: 2 },
+      { date: "2026-04-15", email_count: 3 },
+    ],
+  }));
+  assert.ok(s.some((x) => x.signal === "recipient_fanout_spike"));
+});
+
+test("recipient_fanout_spike does NOT fire when fanout is normal", () => {
+  const s = extractSignals(email(), ctx({
+    recipientFanout24h: 2,
+    senderDaily: [
+      { date: "2026-04-17", email_count: 3 },
+      { date: "2026-04-16", email_count: 2 },
+      { date: "2026-04-15", email_count: 3 },
+    ],
+  }));
+  assert.equal(s.some((x) => x.signal === "recipient_fanout_spike"), false);
+});
+
+test("phone_number_lure fires with phone number + urgency, no URLs", () => {
+  const s = extractSignals(
+    email({ body_text: "Call 555-123-4567 immediately. This is urgent." }),
+    ctx(),
+  );
+  assert.ok(s.some((x) => x.signal === "phone_number_lure"));
+});
+
+test("phone_number_lure does NOT fire when URLs present", () => {
+  const s = extractSignals(
+    email({ body_text: "Call 555-123-4567 urgent https://example.com" }),
+    ctx(),
+  );
+  assert.equal(s.some((x) => x.signal === "phone_number_lure"), false);
+});
+
+test("body_brevity_with_urgency fires for short body with urgency", () => {
+  const s = extractSignals(
+    email({ body_text: "Act now or your account will be suspended." }),
+    ctx(),
+  );
+  assert.ok(s.some((x) => x.signal === "body_brevity_with_urgency"));
+});
+
+test("body_brevity_with_urgency does NOT fire for long body", () => {
+  const longBody = "Act now. " + "x".repeat(200);
+  const s = extractSignals(email({ body_text: longBody }), ctx());
+  assert.equal(s.some((x) => x.signal === "body_brevity_with_urgency"), false);
+});
+
+test("volume_zscore_anomaly fires when z-score > 3.0", () => {
+  // Need extreme spike relative to baseline for population z-score > 3.0
+  const s = extractSignals(email(), ctx({
+    senderDaily: [
+      { date: "2026-04-17", email_count: 200 },
+      { date: "2026-04-16", email_count: 3 },
+      { date: "2026-04-15", email_count: 2 },
+      { date: "2026-04-14", email_count: 3 },
+      { date: "2026-04-13", email_count: 2 },
+      { date: "2026-04-12", email_count: 3 },
+      { date: "2026-04-11", email_count: 2 },
+    ],
+  }));
+  const v = s.find((x) => x.signal === "volume_zscore_anomaly");
+  assert.ok(v);
+  assert.ok(v.detail.z_score > 3.0);
+});
+
+test("volume_zscore_anomaly does NOT fire for stable volumes", () => {
+  const s = extractSignals(email(), ctx({
+    senderDaily: [
+      { date: "2026-04-17", email_count: 5 },
+      { date: "2026-04-16", email_count: 4 },
+      { date: "2026-04-15", email_count: 5 },
+      { date: "2026-04-14", email_count: 4 },
+      { date: "2026-04-13", email_count: 5 },
+    ],
+  }));
+  assert.equal(s.some((x) => x.signal === "volume_zscore_anomaly"), false);
+});
+
+test("sender_domain_age_risk fires when domain < 7 days old", () => {
+  const twoDaysAgo = new Date(Date.now() - 2 * 86400 * 1000);
+  const s = extractSignals(email(), ctx({
+    domainRow: { first_seen: twoDaysAgo },
+  }));
+  assert.ok(s.some((x) => x.signal === "sender_domain_age_risk"));
+});
+
+test("sender_domain_age_risk does NOT fire when domain > 7 days old", () => {
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400 * 1000);
+  const s = extractSignals(email(), ctx({
+    domainRow: { first_seen: thirtyDaysAgo },
+  }));
+  assert.equal(s.some((x) => x.signal === "sender_domain_age_risk"), false);
+});

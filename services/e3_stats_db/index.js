@@ -11,12 +11,16 @@
 import { makeApp, listen } from "@etdp/shared/engineBase";
 import { safeOrgQuery } from "@etdp/shared/mysql";
 import { cached } from "@etdp/shared/cache";
+import * as ss from "simple-statistics";
 
 const URL_RE = /https?:\/\/[^\s<>"']+/gi;
 const FREEMAIL = new Set([
   "gmail.com", "yahoo.com", "outlook.com", "hotmail.com",
   "proton.me", "icloud.com", "aol.com",
 ]);
+const URGENCY_RE = /\b(urgent|immediate|asap|right away|act now|expires|deadline|time.?sensitive|don'?t delay)\b/i;
+const FINANCIAL_RE = /\b(wire|invoice|payment|remittance|bank.?account|routing.?number|ach|transfer funds|direct.?deposit|payroll)\b/i;
+const PHONE_RE = /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/;
 
 export function senderDomain(email) {
   return email.sender.includes("@") ? email.sender.split("@")[1].toLowerCase() : "";
@@ -61,7 +65,7 @@ async function loadContext(email) {
 
   const [
     senderHist, pairHist, domainRow, senderDaily, senderHourly,
-    senderAgg, orgInternalDomains, domainRecent,
+    senderAgg, orgInternalDomains, domainRecent, recipientFanout24h,
   ] = await Promise.all([
     // Overall sender history: counts and date bounds.
     cached(`sh:${orgId}:${sender}`, 30, () =>
@@ -116,11 +120,17 @@ async function loadContext(email) {
           AND \`timestamp\` BETWEEN NOW() - INTERVAL 8 DAY AND NOW() - INTERVAL 1 DAY) AS prior_7d`,
       [orgId, domain, orgId, domain],
     ).then((r) => r.ok ? r.rows[0] : null) : Promise.resolve(null),
+    // Unique recipient count in last 24h for fanout spike detection.
+    safeOrgQuery(orgId,
+      `SELECT COUNT(DISTINCT recipient) AS cnt FROM sender_recipient_pairs
+       WHERE org_id=? AND sender=? AND last_seen > NOW() - INTERVAL 1 DAY`,
+      [orgId, sender],
+    ).then((r) => r.ok ? Number(r.rows[0]?.cnt || 0) : 0),
   ]);
 
   return { orgId, sender, domain, recipient, ts,
     senderHist, pairHist, domainRow, senderDaily, senderHourly,
-    senderAgg, orgInternalDomains, domainRecent };
+    senderAgg, orgInternalDomains, domainRecent, recipientFanout24h };
 }
 
 // Each signal returns Signal | null. All run against the shared context.
@@ -141,13 +151,13 @@ export function extractSignals(email, ctx, orgCtx = {}) {
 
   // ── Group: Frequency baselines ────────────────────────────────────────
   if (senderCount === 0) {
-    signals.push(sig("first_time_sender", 1.5, { sender: ctx.sender }));
+    signals.push(sig("first_time_sender", 2.25, { sender: ctx.sender }));
   }
 
   if (ctx.senderHist?.last_seen) {
     const daysDormant = (Date.now() - new Date(ctx.senderHist.last_seen).getTime()) / 86400000;
     if (daysDormant > 30) {
-      signals.push(sig("dormant_sender_reactivation", 1.8,
+      signals.push(sig("dormant_sender_reactivation", 2.7,
         { days_dormant: Math.round(daysDormant) }));
     }
   }
@@ -156,7 +166,7 @@ export function extractSignals(email, ctx, orgCtx = {}) {
   if (ctx.senderDaily.length >= 3 && avgDaily > 0) {
     const today = Number(ctx.senderDaily[0].email_count);
     if (today > avgDaily * 2.5) {
-      signals.push(sig("communication_cadence_shift", 1.0,
+      signals.push(sig("communication_cadence_shift", 1.5,
         { today, avg_7d: Number(avgDaily.toFixed(2)) }));
     }
   }
@@ -167,17 +177,22 @@ export function extractSignals(email, ctx, orgCtx = {}) {
     const lastDay = Number(ctx.domainRecent.last_day || 0);
     const prior7d = Number(ctx.domainRecent.prior_7d || 0);
     if (lastDay > 10 && lastDay > prior7d / 7 * 3) {
-      signals.push(sig("new_domain_surge", 2.0,
+      signals.push(sig("new_domain_surge", 3.0,
         { domain: ctx.domain, last_day: lastDay, prior_weekly_avg: prior7d / 7 }));
     }
   }
 
   // ── Group: Sender volume anomaly ──────────────────────────────────────
-  if (avgDaily > 0) {
-    const today = ctx.senderDaily.length > 0 ? Number(ctx.senderDaily[0].email_count) : 0;
-    if (today > avgDaily * 3 && today > 5) {
-      signals.push(sig("daily_count_spike", 1.8,
-        { today, avg_7d: Number(avgDaily.toFixed(2)) }));
+  // MAD-based Modified Z-Score: robust against skewed distributions.
+  if (ctx.senderDaily.length >= 3) {
+    const dailyCounts = ctx.senderDaily.map((r) => Number(r.email_count));
+    const todayCount = dailyCounts[0];
+    const median = ss.median(dailyCounts);
+    const mad = ss.medianAbsoluteDeviation(dailyCounts);
+    const modifiedZ = mad > 0 ? 0.6745 * (todayCount - median) / mad : 0;
+    if (modifiedZ > 3.5) {
+      signals.push(sig("daily_count_spike", 3.75,
+        { today: todayCount, median, mad, modified_z: Number(modifiedZ.toFixed(2)) }));
     }
   }
 
@@ -190,14 +205,14 @@ export function extractSignals(email, ctx, orgCtx = {}) {
     const expected = totalHourly / 24;
     // Very rare hour for this sender.
     if (expected >= 1 && thisHourCount === 0) {
-      signals.push(sig("hourly_deviation", 0.8, { hour_utc: hour }));
+      signals.push(sig("hourly_deviation", 1.2, { hour_utc: hour }));
     }
   }
 
   // burst_detection (60-min vs 7d-daily-avg × 3).
   const threshold = Math.max(5, avgDaily * 3);
   if (ctx.senderAgg > threshold) {
-    signals.push(sig("sender_burst", 2.5,
+    signals.push(sig("sender_burst", 3.75,
       { last_hour: ctx.senderAgg, avg_daily: Number(avgDaily.toFixed(2)), threshold }));
   }
 
@@ -206,7 +221,7 @@ export function extractSignals(email, ctx, orgCtx = {}) {
     const today = Number(ctx.senderDaily[0].email_count);
     const yest = Number(ctx.senderDaily[1].email_count);
     if (yest > 0 && today > yest * 4) {
-      signals.push(sig("send_rate_change", 1.2, { today, yesterday: yest }));
+      signals.push(sig("send_rate_change", 1.8, { today, yesterday: yest }));
     }
   }
 
@@ -217,19 +232,19 @@ export function extractSignals(email, ctx, orgCtx = {}) {
     const daysSince = (Date.now() - new Date(ctx.senderHist.last_seen).getTime()) / 86400000;
     const todayCount = ctx.senderDaily.length > 0 ? Number(ctx.senderDaily[0].email_count) : 0;
     if (daysSince > 7 && todayCount >= 2) {
-      signals.push(sig("silence_then_burst", 2.2,
+      signals.push(sig("silence_then_burst", 3.3,
         { days_dormant: Math.round(daysSince), today_count: todayCount }));
     }
   }
 
   // ── Group: Recipient anomaly ──────────────────────────────────────────
   if (ctx.pairHist === null && ctx.recipient) {
-    signals.push(sig("first_time_pair", 0.8,
+    signals.push(sig("first_time_pair", 1.2,
       { sender: ctx.sender, recipient: ctx.recipient }));
   }
 
   if (recipients.length > 10) {
-    signals.push(sig("mass_bcc_detection", 1.5, { recipient_count: recipients.length }));
+    signals.push(sig("mass_bcc_detection", 2.25, { recipient_count: recipients.length }));
   }
 
   if (senderCount >= 5) {
@@ -237,7 +252,7 @@ export function extractSignals(email, ctx, orgCtx = {}) {
     const avgRecipsPerEmail = 1 + (Number(ctx.senderHist?.avg_attach || 0) > 0 ? 0 : 0);
     // Use simple heuristic: >5 recipients when historic senders typically send 1-2.
     if (recipients.length >= 5 && senderCount > 10) {
-      signals.push(sig("recipient_count_anomaly", 1.0,
+      signals.push(sig("recipient_count_anomaly", 1.5,
         { recipient_count: recipients.length, sender_history: senderCount }));
     }
   }
@@ -247,7 +262,7 @@ export function extractSignals(email, ctx, orgCtx = {}) {
 
   // ── Group: Time-of-day anomaly ────────────────────────────────────────
   if (hour < bizStart || hour >= bizEnd) {
-    signals.push(sig("off_hours_email", 0.5,
+    signals.push(sig("off_hours_email", 0.75,
       { hour_utc: hour, biz_window: [bizStart, bizEnd] }));
   }
 
@@ -256,7 +271,7 @@ export function extractSignals(email, ctx, orgCtx = {}) {
       .filter((r) => Number(r.day_of_week) === 0 || Number(r.day_of_week) === 6)
       .reduce((a, r) => a + Number(r.email_count), 0);
     if (weekendHist === 0) {
-      signals.push(sig("weekend_activity_spike", 1.5,
+      signals.push(sig("weekend_activity_spike", 2.25,
         { day_of_week: dow, sender_never_weekends: true }));
     }
   }
@@ -271,7 +286,7 @@ export function extractSignals(email, ctx, orgCtx = {}) {
     const thisDow = byDow.get(dow) || 0;
     const total = [...byDow.values()].reduce((a, b) => a + b, 0);
     if (total > 10 && thisDow === 0) {
-      signals.push(sig("schedule_deviation", 0.7, { day_of_week: dow }));
+      signals.push(sig("schedule_deviation", 1.05, { day_of_week: dow }));
     }
   }
 
@@ -279,11 +294,11 @@ export function extractSignals(email, ctx, orgCtx = {}) {
 
   // ── Group: Domain patterns ────────────────────────────────────────────
   if (ctx.domain && !ctx.domainRow) {
-    signals.push(sig("domain_first_seen", 1.2, { domain: ctx.domain }));
+    signals.push(sig("domain_first_seen", 1.8, { domain: ctx.domain }));
   } else if (ctx.domainRow) {
     const ageMs = Date.now() - new Date(ctx.domainRow.first_seen).getTime();
     if (ageMs < 48 * 3600 * 1000) {
-      signals.push(sig("domain_first_seen_recent", 1.0,
+      signals.push(sig("domain_first_seen_recent", 1.5,
         { domain: ctx.domain, age_hours: Math.round(ageMs / 3.6e6) }));
     }
   }
@@ -293,7 +308,7 @@ export function extractSignals(email, ctx, orgCtx = {}) {
     const prior7d = Number(ctx.domainRecent.prior_7d || 0);
     const dailyAvg = prior7d / 7;
     if (dailyAvg > 2 && lastDay > dailyAvg * 2) {
-      signals.push(sig("domain_email_volume_trend", 0.8,
+      signals.push(sig("domain_email_volume_trend", 1.2,
         { domain: ctx.domain, last_day: lastDay, daily_avg_prior: Number(dailyAvg.toFixed(2)) }));
     }
   }
@@ -303,7 +318,7 @@ export function extractSignals(email, ctx, orgCtx = {}) {
       if (known === ctx.domain) break;
       const dist = editDist(ctx.domain, known, 2);
       if (dist > 0 && dist <= 2) {
-        signals.push(sig("lookalike_domain", 3.0,
+        signals.push(sig("lookalike_domain", 4.5,
           { domain: ctx.domain, similar_to: known, edit_distance: dist }));
         break;
       }
@@ -312,7 +327,7 @@ export function extractSignals(email, ctx, orgCtx = {}) {
 
   if (ctx.domain && FREEMAIL.has(ctx.domain)
       && recipients.some((r) => r.includes("@") && !FREEMAIL.has(r.split("@")[1].toLowerCase()))) {
-    signals.push(sig("freemail_to_corp", 0.6,
+    signals.push(sig("freemail_to_corp", 0.9,
       { sender_domain: ctx.domain, corp_recipients: recipients.length }));
   }
 
@@ -322,7 +337,7 @@ export function extractSignals(email, ctx, orgCtx = {}) {
     // pair_frequency_deviation: pair exists but this hour is unusual.
     // Approximation: if pair has >20 prior msgs and this is outside biz hours.
     if (totalPair >= 20 && (hour < bizStart || hour >= bizEnd)) {
-      signals.push(sig("pair_frequency_deviation", 0.6,
+      signals.push(sig("pair_frequency_deviation", 0.9,
         { pair_msgs: totalPair, hour_utc: hour }));
     }
   }
@@ -335,22 +350,22 @@ export function extractSignals(email, ctx, orgCtx = {}) {
   if (senderCount >= 10) {
     const avgSize = Number(ctx.senderHist.avg_size || 0);
     if (avgSize > 0 && bodyLen > avgSize * 3) {
-      signals.push(sig("size_distribution_anomaly", 0.8,
+      signals.push(sig("size_distribution_anomaly", 1.2,
         { size: bodyLen, avg_size: Math.round(avgSize) }));
     }
     const avgLinks = Number(ctx.senderHist.avg_links || 0);
     if (avgLinks < 0.5 && linkCount >= 3) {
-      signals.push(sig("link_density_change", 1.2,
+      signals.push(sig("link_density_change", 1.8,
         { links: linkCount, avg_links: Number(avgLinks.toFixed(2)) }));
     }
     const avgAttach = Number(ctx.senderHist.avg_attach || 0);
     if (avgAttach < 0.1 && attCount >= 1) {
-      signals.push(sig("attachment_rate_anomaly", 1.5,
+      signals.push(sig("attachment_rate_anomaly", 2.25,
         { attachments: attCount, historic_rate: Number(avgAttach.toFixed(2)) }));
     }
     if (recipients.length >= 5) {
       // bulk-vs-individual: sender historically 1 recipient, now many.
-      signals.push(sig("bulk_vs_individual_ratio_shift", 1.0,
+      signals.push(sig("bulk_vs_individual_ratio_shift", 1.5,
         { recipients: recipients.length }));
     }
   }
@@ -359,6 +374,87 @@ export function extractSignals(email, ctx, orgCtx = {}) {
   // auth_failure_correlation — DATA_DEP (needs IdP log integration).
   // delegation_change_detection — DATA_DEP (needs M365/Google mgmt API).
   // geographic_sending_anomaly — DATA_DEP (needs IP geolocation).
+
+  // ── Group: New attack-pattern signals ───────────────────────────────
+  // sender_local_entropy: Shannon entropy of local-part detects random-generated addresses.
+  const localPart = ctx.sender.includes("@") ? ctx.sender.split("@")[0] : "";
+  if (localPart.length > 0) {
+    const freq = new Map();
+    for (const ch of localPart) freq.set(ch, (freq.get(ch) || 0) + 1);
+    let entropy = 0;
+    for (const count of freq.values()) {
+      const p = count / localPart.length;
+      entropy -= p * Math.log2(p);
+    }
+    if (entropy > 4.0) {
+      signals.push(sig("sender_local_entropy", 1.5,
+        { local_part: localPart, entropy: Number(entropy.toFixed(2)) }));
+    }
+  }
+
+  // reply_to_domain_mismatch: Reply-To domain differs from From domain.
+  const replyTo = email.headers?.reply_to || email.headers?.["Reply-To"] || "";
+  if (replyTo.includes("@") && ctx.domain) {
+    const replyDomain = replyTo.split("@").pop().toLowerCase().replace(/>.*$/, "");
+    if (replyDomain && replyDomain !== ctx.domain) {
+      signals.push(sig("reply_to_domain_mismatch", 2.25,
+        { from_domain: ctx.domain, reply_to_domain: replyDomain }));
+    }
+  }
+
+  // payloadless_financial: No URLs/attachments but financial keywords → callback phishing.
+  if (linkCount === 0 && attCount === 0 && FINANCIAL_RE.test(email.body_text || "")) {
+    signals.push(sig("payloadless_financial", 2.25,
+      { body_length: bodyLen }));
+  }
+
+  // recipient_fanout_spike: unique recipients in 24h exceeds 3× historical daily median.
+  if (ctx.senderDaily.length >= 3 && ctx.recipientFanout24h > 0) {
+    const dailyCounts = ctx.senderDaily.map((r) => Number(r.email_count));
+    const dailyMedian = ss.median(dailyCounts);
+    if (dailyMedian > 0 && ctx.recipientFanout24h > dailyMedian * 3) {
+      signals.push(sig("recipient_fanout_spike", 2.25,
+        { fanout_24h: ctx.recipientFanout24h, daily_median: dailyMedian }));
+    }
+  }
+
+  // phone_number_lure: phone number + urgency, no URLs → callback/vishing.
+  const bodyText = email.body_text || "";
+  if (linkCount === 0 && PHONE_RE.test(bodyText) && URGENCY_RE.test(bodyText)) {
+    signals.push(sig("phone_number_lure", 1.5,
+      { has_phone: true, has_urgency: true }));
+  }
+
+  // body_brevity_with_urgency: very short body with urgency keyword.
+  if (bodyLen > 0 && bodyLen < 100 && URGENCY_RE.test(bodyText)) {
+    signals.push(sig("body_brevity_with_urgency", 1.5,
+      { body_length: bodyLen }));
+  }
+
+  // volume_zscore_anomaly: sender's daily volume z-score > 3.0 vs historical baseline.
+  if (ctx.senderDaily.length >= 5) {
+    const dailyCounts = ctx.senderDaily.map((r) => Number(r.email_count));
+    const todayCount = dailyCounts[0];
+    const baseline = dailyCounts.slice(1); // exclude today from baseline
+    const mean = ss.mean(baseline);
+    const stddev = ss.sampleStandardDeviation(baseline);
+    if (stddev > 0) {
+      const z = ss.zScore(todayCount, mean, stddev);
+      if (z > 3.0) {
+        signals.push(sig("volume_zscore_anomaly", 2.25,
+          { today: todayCount, mean: Number(mean.toFixed(2)), z_score: Number(z.toFixed(2)) }));
+      }
+    }
+  }
+
+  // sender_domain_age_risk: domain first seen < 7 days ago.
+  if (ctx.domainRow?.first_seen) {
+    const ageDays = (Date.now() - new Date(ctx.domainRow.first_seen).getTime()) / 86400000;
+    if (ageDays < 7) {
+      signals.push(sig("sender_domain_age_risk", 1.5,
+        { domain: ctx.domain, age_days: Number(ageDays.toFixed(1)) }));
+    }
+  }
 
   return signals;
 }
