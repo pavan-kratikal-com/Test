@@ -11,13 +11,17 @@
     "./kafka": "./kafka.js",
     "./logreg": "./logreg.js",
     "./features": "./features.js",
-    "./modelRegistry": "./modelRegistry.js"
+    "./modelRegistry": "./modelRegistry.js",
+    "./ldap": "./ldap.js",
+    "./whois": "./whois.js",
+    "./reputation": "./reputation.js"
   },
   "dependencies": {
     "express": "^4.21.0",
     "kafkajs": "^2.2.4",
     "mysql2": "^3.11.3",
     "redis": "^4.7.0",
+    "undici": "^6.20.0",
     "zod": "^3.23.8"
   }
 }

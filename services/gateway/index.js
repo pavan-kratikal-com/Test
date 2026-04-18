@@ -17,16 +17,24 @@ import { signalsToFeatures } from "@etdp/shared/features";
 import { predictProba } from "@etdp/shared/logreg";
 import { getDeployments } from "@etdp/shared/modelRegistry";
 
-const FAST_PRE = ["e1_rspamd"];                        // stage 1 (E1 alone)
-const FAST_MAIN = ["e2_slm", "e3_stats_db", "e4_graph_db"]; // stage 2
+// 3-stage fast path (PRD §6.2 dependency graph):
+//   Stage A: E1 rspamd (protocol auth + reputation)
+//   Stage B: E3 stats_db + E4 graph_db (behavioral + communication graph)
+//            in parallel — both depend on nothing but the email
+//   Stage C: E2 SLM — reads priors from A + B to do cross-signal reasoning
+//                      (first_time_sender + wire → NEW_VENDOR_WIRE_REQUEST, etc.)
+const FAST_PRE_A = ["e1_rspamd"];
+const FAST_PRE_B = ["e3_stats_db", "e4_graph_db"];
+const FAST_MAIN = ["e2_slm"];
 const DEEP_PATH = ["e5_url_scanner", "e6_attachment", "e7_visual", "e9_specialized_ml"];
 const DEEP_PATH_THRESHOLD = 0.85;
 
 const ENGINE_HOSTS = Object.fromEntries(
-  [...FAST_PRE, ...FAST_MAIN, ...DEEP_PATH, "e8_sandbox", "synthesizer"].map((name) => [
-    name,
-    process.env[`${name.toUpperCase()}_URL`] || `http://${name}:80`,
-  ]),
+  [...FAST_PRE_A, ...FAST_PRE_B, ...FAST_MAIN, ...DEEP_PATH, "e8_sandbox", "synthesizer"]
+    .map((name) => [
+      name,
+      process.env[`${name.toUpperCase()}_URL`] || `http://${name}:80`,
+    ]),
 );
 
 async function callEngine(name, email) {
@@ -200,14 +208,20 @@ app.post("/v1/analyze", async (req, res) => {
 
   const t0 = process.hrtime.bigint();
 
-  // Stage 1: rspamd alone.
-  const preResponses = await fanout(FAST_PRE, enrichedEmail);
-  const preSignals = preResponses.flatMap((r) => r.signals || []);
+  // Stage A: rspamd alone (protocol auth + reputation).
+  const aResponses = await fanout(FAST_PRE_A, enrichedEmail);
+  const aSignals = aResponses.flatMap((r) => r.signals || []);
 
-  // Stage 2: SLM sees rspamd signals via prior_signals; Stats/Graph run in parallel.
-  const stage2Payload = { ...enrichedEmail, prior_signals: preSignals };
-  const mainResponses = await fanout(FAST_MAIN, stage2Payload);
-  const fastSignals = [...preSignals, ...mainResponses.flatMap((r) => r.signals || [])];
+  // Stage B: stats_db + graph_db in parallel, seeded with A's priors.
+  const bPayload = { ...enrichedEmail, prior_signals: aSignals };
+  const bResponses = await fanout(FAST_PRE_B, bPayload);
+  const bSignals = bResponses.flatMap((r) => r.signals || []);
+
+  // Stage C: SLM with full A+B priors → cross-signal reasoning
+  // (NEW_VENDOR_WIRE_REQUEST, EXEC_IMPERSONATION_TEXT, …).
+  const cPayload = { ...enrichedEmail, prior_signals: [...aSignals, ...bSignals] };
+  const cResponses = await fanout(FAST_MAIN, cPayload);
+  const fastSignals = [...aSignals, ...bSignals, ...cResponses.flatMap((r) => r.signals || [])];
 
   const fastAgg = aggregate(fastSignals, orgCtx.thresholds, orgCtx.industry_weights);
   const fastMs = Number(process.hrtime.bigint() - t0) / 1e6;
@@ -215,7 +229,7 @@ app.post("/v1/analyze", async (req, res) => {
   const fastConfidence = Math.min(fastAgg.total / 15, 1);
   let deepSignals = [];
   let deepMs = 0;
-  const enginesInvoked = [...FAST_PRE, ...FAST_MAIN];
+  const enginesInvoked = [...FAST_PRE_A, ...FAST_PRE_B, ...FAST_MAIN];
   let asyncDeepPath = false;
 
   if (fastConfidence < DEEP_PATH_THRESHOLD) {
