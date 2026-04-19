@@ -85,8 +85,10 @@ export function renderDashboardPage() {
   th { text-align: left; padding: 8px 10px; color: var(--muted); font-weight: 500;
        border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase;
        letter-spacing: 0.3px; cursor: default; white-space: nowrap; }
-  th.sortable { cursor: pointer; }
+  th.sortable { cursor: pointer; user-select: none; }
   th.sortable:hover { color: var(--text); }
+  th.sortable .sort-arrow { font-size: 10px; margin-left: 3px; opacity: 0.4; }
+  th.sortable.sort-active .sort-arrow { opacity: 1; color: var(--accent); }
   td { padding: 8px 10px; border-bottom: 1px solid var(--surface2); }
   tr:hover { background: var(--surface2); }
   tr.clickable { cursor: pointer; }
@@ -102,9 +104,11 @@ export function renderDashboardPage() {
   .badge { padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
   .badge.block { background: #f8514920; color: var(--crit); }
   .badge.quarantine { background: #d2992220; color: var(--med); }
+  .badge.note { background: #58a6ff20; color: var(--info); }
   .badge.allow { background: #3fb95020; color: var(--low); }
   .badge.phishing { background: #f8514920; color: var(--crit); }
   .badge.spam { background: #d2992220; color: var(--med); }
+  .badge.suspicious { background: #58a6ff20; color: var(--info); }
   .badge.ham { background: #3fb95020; color: var(--low); }
   .badge.active { background: #3fb95020; color: var(--low); }
   .badge.trained { background: #58a6ff20; color: var(--info); }
@@ -313,9 +317,14 @@ export function renderDashboardPage() {
     <h2 id="view-title">Executive Overview</h2>
     <select id="org-select"><option value="">Loading orgs...</option></select>
     <div class="topbar-right">
+      <button class="btn primary" style="font-size:12px;padding:5px 14px;" onclick="openNewOrgModal()">+ New Org</button>
       <button class="theme-btn" id="theme-toggle" onclick="toggleTheme()">
         <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"/></svg>
         <span id="theme-label">Light</span>
+      </button>
+      <button class="theme-btn" onclick="logout()" title="Sign out">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 3a1 1 0 011-1h8a1 1 0 011 1v2a1 1 0 11-2 0V4H5v12h6v-1a1 1 0 112 0v2a1 1 0 01-1 1H4a1 1 0 01-1-1V3z"/><path fill-rule="evenodd" d="M14.293 7.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L15.586 12H8a1 1 0 110-2h7.586l-1.293-1.293a1 1 0 010-1.414z"/></svg>
+        <span>Logout</span>
       </button>
     </div>
   </div>
@@ -334,6 +343,29 @@ export function renderDashboardPage() {
   <div class="drawer-body" id="drawer-body"></div>
 </div>
 
+<!-- New Org Modal -->
+<div id="new-org-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;" onclick="closeNewOrgModal()"></div>
+<div id="new-org-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:420px;max-width:95vw;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px;z-index:201;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+    <strong style="font-size:16px;">Create Organization</strong>
+    <button style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;" onclick="closeNewOrgModal()">&times;</button>
+  </div>
+  <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:3px;">Name</label>
+  <input id="no-name" style="width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;margin-bottom:10px;">
+  <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:3px;">Org ID (auto)</label>
+  <input id="no-orgid" style="width:100%;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:13px;margin-bottom:10px;" readonly>
+  <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:3px;">Industry</label>
+  <select id="no-industry" style="width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;margin-bottom:10px;">
+    <option value="general">General</option><option value="banking">Banking</option>
+    <option value="tech">Technology</option><option value="government">Government</option>
+    <option value="healthcare">Healthcare</option><option value="legal">Legal</option>
+    <option value="retail">Retail</option>
+  </select>
+  <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:3px;">Initial Domain</label>
+  <input id="no-domain" placeholder="example.com" style="width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;margin-bottom:16px;">
+  <button class="btn primary" style="width:100%;" onclick="submitNewOrg()">Create</button>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -342,6 +374,8 @@ let currentOrg = localStorage.getItem("etdp_soc_org") || "";
 let currentTheme = localStorage.getItem("etdp_theme") || "dark";
 let verdictCache = [];
 let selectedRows = new Set();
+let threatSortCol = "created_at";
+let threatSortDir = "desc";
 
 // ── Apply theme ────────────────────────────────────────────────────────
 function applyTheme() {
@@ -417,18 +451,36 @@ function showToast(msg, type) {
   setTimeout(() => t.style.display = "none", 4000);
 }
 
+async function tryRefreshAuth() {
+  try {
+    const r = await fetch("/auth/refresh", { method: "POST" });
+    return r.ok;
+  } catch { return false; }
+}
+
 async function api(path) {
-  const res = await fetch(path);
+  let res = await fetch(path);
+  if (res.status === 401) {
+    const refreshed = await tryRefreshAuth();
+    if (!refreshed) { location.href = "/login"; return; }
+    res = await fetch(path);
+  }
   if (!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
 }
 
 async function apiPost(path, body) {
-  const res = await fetch(path, {
+  const opts = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  };
+  let res = await fetch(path, opts);
+  if (res.status === 401) {
+    const refreshed = await tryRefreshAuth();
+    if (!refreshed) { location.href = "/login"; return; }
+    res = await fetch(path, opts);
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || "HTTP " + res.status);
@@ -437,16 +489,27 @@ async function apiPost(path, body) {
 }
 
 async function apiPut(path, body) {
-  const res = await fetch(path, {
+  const opts = {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  };
+  let res = await fetch(path, opts);
+  if (res.status === 401) {
+    const refreshed = await tryRefreshAuth();
+    if (!refreshed) { location.href = "/login"; return; }
+    res = await fetch(path, opts);
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || "HTTP " + res.status);
   }
   return res.json();
+}
+
+async function logout() {
+  await fetch("/auth/logout", { method: "POST" });
+  location.href = "/login";
 }
 
 // ── IOC Extraction ─────────────────────────────────────────────────────
@@ -684,7 +747,9 @@ async function renderOverview() {
     const recentRows = (recent.verdicts || []).map(v =>
       '<tr class="clickable" onclick="navigate(\\'#incident/' +
         encodeURIComponent(v.org_id) + '/' + encodeURIComponent(v.message_id) + '\\')">' +
-      '<td>' + esc(v.sender) + '</td><td>' + labelBadge(v.label) + '</td>' +
+      '<td>' + esc(v.sender) + '</td>' +
+      '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(v.subject || '') + '">' + esc(v.subject || '—') + '</td>' +
+      '<td>' + labelBadge(v.label) + '</td>' +
       '<td>' + verdictBadge(v.verdict) + '</td>' +
       '<td class="' + scoreClass(v.threat_score) + '">' + Number(v.threat_score).toFixed(1) + '</td>' +
       '<td>' + esc(ago(v.created_at)) + '</td></tr>'
@@ -713,7 +778,7 @@ async function renderOverview() {
         '</div>' +
       '</div>' +
       '<div class="panel"><h3>Recent Threats</h3>' +
-        (recentRows ? '<table><thead><tr><th>Sender</th><th>Label</th><th>Verdict</th><th>Score</th><th>Time</th></tr></thead><tbody>' + recentRows + '</tbody></table>'
+        (recentRows ? '<table><thead><tr><th>Sender</th><th>Subject</th><th>Label</th><th>Verdict</th><th>Score</th><th>Time</th></tr></thead><tbody>' + recentRows + '</tbody></table>'
          : '<div class="empty">No recent verdicts</div>') +
       '</div>';
   } catch (e) {
@@ -736,6 +801,12 @@ async function renderThreats() {
       '<input type="date" id="tf-since">' +
       '<input type="text" id="tf-search" placeholder="Search sender/recipient...">' +
       '<label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);">Score &ge; <input type="number" id="tf-score" min="0" step="0.5" value="0" style="width:60px;"></label>' +
+      '<select id="tf-engine"><option value="">All Engines</option>' +
+        '<option value="slm">SLM</option><option value="rspamd">Rspamd</option><option value="stats_db">Stats DB</option>' +
+        '<option value="graph_db">Graph DB</option><option value="url_scanner">URL Scanner</option>' +
+        '<option value="visual">Visual</option><option value="specialized_ml">Specialized ML</option>' +
+        '<option value="attachment">Attachment</option></select>' +
+      '<input type="text" id="tf-signal" placeholder="Signal name...">' +
     '</div>' +
     '<div class="bulk-bar" id="bulk-bar">' +
       '<span id="bulk-count">0 selected</span>' +
@@ -750,10 +821,16 @@ async function renderThreats() {
   document.getElementById("tf-verdict").onchange = () => loadThreats();
   document.getElementById("tf-since").onchange = () => loadThreats();
   document.getElementById("tf-score").onchange = () => loadThreats();
+  document.getElementById("tf-engine").onchange = () => loadThreats();
   let searchTimeout;
   document.getElementById("tf-search").oninput = () => {
     clearTimeout(searchTimeout);
     searchTimeout = setTimeout(() => loadThreats(), 300);
+  };
+  let signalTimeout;
+  document.getElementById("tf-signal").oninput = () => {
+    clearTimeout(signalTimeout);
+    signalTimeout = setTimeout(() => loadThreats(), 300);
   };
   loadThreats();
 }
@@ -764,6 +841,8 @@ async function loadThreats() {
   const sinceEl = document.getElementById("tf-since");
   const searchEl = document.getElementById("tf-search");
   const scoreEl = document.getElementById("tf-score");
+  const engineEl = document.getElementById("tf-engine");
+  const signalEl = document.getElementById("tf-signal");
 
   let url = "/v1/verdicts?org_id=" + encodeURIComponent(currentOrg) + "&limit=200";
   if (labelEl && labelEl.value) url += "&label=" + encodeURIComponent(labelEl.value);
@@ -775,15 +854,49 @@ async function loadThreats() {
     let rows = data.verdicts || [];
     const search = searchEl ? searchEl.value.toLowerCase() : "";
     const minScore = scoreEl ? Number(scoreEl.value) || 0 : 0;
+    const engineFilter = engineEl ? engineEl.value : "";
+    const signalFilter = signalEl ? signalEl.value.toLowerCase() : "";
 
     if (search) {
       rows = rows.filter(v => (v.sender || "").toLowerCase().includes(search) ||
                                (v.recipient || "").toLowerCase().includes(search) ||
-                               (v.message_id || "").toLowerCase().includes(search));
+                               (v.message_id || "").toLowerCase().includes(search) ||
+                               (v.subject || "").toLowerCase().includes(search));
     }
     if (minScore > 0) {
       rows = rows.filter(v => Number(v.threat_score) >= minScore);
     }
+    if (engineFilter) {
+      rows = rows.filter(v => {
+        const sigs = typeof v.signals === "string" ? JSON.parse(v.signals || "[]") : (v.signals || []);
+        return sigs.some(s => s.engine === engineFilter);
+      });
+    }
+    if (signalFilter) {
+      rows = rows.filter(v => {
+        const sigs = typeof v.signals === "string" ? JSON.parse(v.signals || "[]") : (v.signals || []);
+        return sigs.some(s => (s.signal || "").toLowerCase().includes(signalFilter));
+      });
+    }
+
+    // Sort rows
+    rows.sort((a, b) => {
+      let av, bv;
+      switch (threatSortCol) {
+        case "created_at": av = a.created_at || ""; bv = b.created_at || ""; break;
+        case "sender": av = (a.sender || "").toLowerCase(); bv = (b.sender || "").toLowerCase(); break;
+        case "recipient": av = (a.recipient || "").toLowerCase(); bv = (b.recipient || "").toLowerCase(); break;
+        case "subject": av = (a.subject || "").toLowerCase(); bv = (b.subject || "").toLowerCase(); break;
+        case "label": av = a.label || ""; bv = b.label || ""; break;
+        case "verdict": av = a.verdict || ""; bv = b.verdict || ""; break;
+        case "threat_score": av = Number(a.threat_score) || 0; bv = Number(b.threat_score) || 0; break;
+        case "confidence": av = Number(a.confidence) || 0; bv = Number(b.confidence) || 0; break;
+        case "fast_path_ms": av = Number(a.fast_path_ms) || 0; bv = Number(b.fast_path_ms) || 0; break;
+        default: av = a.created_at || ""; bv = b.created_at || "";
+      }
+      let cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return threatSortDir === "desc" ? -cmp : cmp;
+    });
 
     verdictCache = rows;
     selectedRows.clear();
@@ -803,6 +916,7 @@ async function loadThreats() {
       '<td onclick="openThreatDrawer(' + i + ')">' + esc(ago(v.created_at)) + '</td>' +
       '<td onclick="openThreatDrawer(' + i + ')">' + esc(v.sender) + '</td>' +
       '<td onclick="openThreatDrawer(' + i + ')">' + esc(v.recipient) + '</td>' +
+      '<td onclick="openThreatDrawer(' + i + ')" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(v.subject || '') + '">' + esc(v.subject || '—') + '</td>' +
       '<td onclick="openThreatDrawer(' + i + ')">' + labelBadge(v.label) + '</td>' +
       '<td onclick="openThreatDrawer(' + i + ')">' + verdictBadge(v.verdict) + '</td>' +
       '<td onclick="openThreatDrawer(' + i + ')" class="' + scoreClass(v.threat_score) + '">' + Number(v.threat_score).toFixed(1) + '</td>' +
@@ -811,10 +925,24 @@ async function loadThreats() {
       '</tr>'
     ).join("");
 
+    var cols = [
+      { key: "created_at", label: "Time" }, { key: "sender", label: "Sender" },
+      { key: "recipient", label: "Recipient" }, { key: "subject", label: "Subject" },
+      { key: "label", label: "Label" }, { key: "verdict", label: "Verdict" },
+      { key: "threat_score", label: "Score" }, { key: "confidence", label: "Confidence" },
+      { key: "fast_path_ms", label: "Speed" }
+    ];
+    var thRow = cols.map(function(c) {
+      var active = threatSortCol === c.key ? " sort-active" : "";
+      var arrow = threatSortCol === c.key ? (threatSortDir === "asc" ? "&#9650;" : "&#9660;") : "&#9650;";
+      return '<th class="sortable' + active + '" onclick="sortThreats(\\'' + c.key + '\\')">' + c.label + '<span class="sort-arrow">' + arrow + '</span></th>';
+    }).join("");
+
     wrap.innerHTML = '<table><thead><tr>' +
       '<th class="check-cell"><input type="checkbox" onclick="toggleAllRows(this)"></th>' +
-      '<th>Time</th><th>Sender</th><th>Recipient</th><th>Label</th><th>Verdict</th><th>Score</th><th>Confidence</th><th>Speed</th>' +
-      '</tr></thead><tbody>' + tbody + '</tbody></table>';
+      thRow +
+      '</tr></thead><tbody>' + tbody + '</tbody></table>' +
+      '<div style="padding:8px 0;font-size:11px;color:var(--muted);">' + rows.length + ' results</div>';
   } catch (e) {
     const wrap = document.getElementById("threat-table-wrap");
     if (wrap) wrap.innerHTML = '<div class="empty">Error: ' + esc(e.message) + '</div>';
@@ -847,6 +975,16 @@ function updateBulkBar() {
   } else {
     bar.classList.remove("visible");
   }
+}
+
+function sortThreats(col) {
+  if (threatSortCol === col) {
+    threatSortDir = threatSortDir === "asc" ? "desc" : "asc";
+  } else {
+    threatSortCol = col;
+    threatSortDir = (col === "threat_score" || col === "confidence" || col === "fast_path_ms" || col === "created_at") ? "desc" : "asc";
+  }
+  loadThreats();
 }
 
 async function bulkAction(action) {
@@ -899,10 +1037,18 @@ function openThreatDrawer(idx) {
         verdictBadge(d.verdict) + ' ' + labelBadge(d.label) + '</div>' +
         '<div class="detail-meta">Message: <code style="font-size:11px;">' + esc(d.message_id) + '</code></div>' +
         '<div class="detail-meta">From: <strong>' + esc(d.sender) + '</strong> &rarr; ' + esc(d.recipient) + '</div>' +
+        (d.subject ? '<div class="detail-meta">Subject: <strong>' + esc(d.subject) + '</strong></div>' : '') +
         '<div class="detail-meta">Score: <span class="' + scoreClass(d.threat_score) + '">' + Number(d.threat_score).toFixed(1) + '</span>' +
         '  |  Confidence: ' + (d.confidence ? fmtPct(d.confidence) : '—') +
         '  |  ' + fmtDate(d.created_at) + '</div>' +
         '</div>';
+
+      // Email body preview
+      if (d.body_preview) {
+        html += '<div class="drawer-section"><h4>Email Body Preview</h4>' +
+          '<div style="font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:12px;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;font-family:monospace;">' +
+          esc(d.body_preview) + '</div></div>';
+      }
 
       // Auth
       html += '<div class="drawer-section"><h4>Authentication</h4>' + renderAuthChips(auth) + '</div>';
@@ -988,7 +1134,8 @@ async function renderIncident(orgId, messageId) {
     // Threat narrative
     const topSignals = signals.slice(0, 3).map(s => s.signal).join(", ");
     const narrative = "This email from <strong>" + esc(v.sender) + "</strong> to <strong>" + esc(v.recipient) +
-      "</strong> was classified as <strong>" + esc(v.label) + "</strong> with verdict <strong>" + esc(v.verdict) +
+      "</strong>" + (v.subject ? ' with subject &ldquo;<strong>' + esc(v.subject) + '</strong>&rdquo;' : '') +
+      " was classified as <strong>" + esc(v.label) + "</strong> with verdict <strong>" + esc(v.verdict) +
       "</strong> (score: " + Number(v.threat_score).toFixed(1) + "). " +
       (topSignals ? "Key signals: " + esc(topSignals) + ". " : "") +
       (v.reason ? esc(v.reason) : "");
@@ -1040,10 +1187,16 @@ async function renderIncident(orgId, messageId) {
       // Meta
       '<div class="section">' +
         '<div class="detail-meta">From: <strong>' + esc(v.sender) + '</strong> &rarr; ' + esc(v.recipient) + '</div>' +
+        (v.subject ? '<div class="detail-meta">Subject: <strong>' + esc(v.subject) + '</strong></div>' : '') +
         '<div class="detail-meta">Score: <span class="' + scoreClass(v.threat_score) + '">' + Number(v.threat_score).toFixed(1) + '</span>' +
         '  |  Confidence: ' + (v.confidence ? fmtPct(v.confidence) : '—') +
         '  |  ' + fmtDate(v.created_at) + '</div>' +
       '</div>' +
+
+      // Email body preview
+      (v.body_preview ? '<div class="section"><h4>Email Body Preview</h4>' +
+        '<div style="font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:12px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto;font-family:monospace;">' +
+        esc(v.body_preview) + '</div></div>' : '') +
 
       // Auth
       '<div class="section"><h4>Authentication Results</h4>' + renderAuthChips(auth) + '</div>' +
@@ -1305,17 +1458,21 @@ function toggleCampaign(idx) {
 // ═══════════════════════════════════════════════════════════════════════
 // VIEW 7: Policy & Thresholds (#policies)
 // ═══════════════════════════════════════════════════════════════════════
+let _policyThresholds = {};  // current thresholds cache for merging saves
+
 async function renderPolicies() {
   if (!currentOrg) { document.getElementById("app").innerHTML = '<div class="empty">Select an organization.</div>'; return; }
   document.getElementById("app").innerHTML = '<div class="empty">Loading policies...</div>';
 
   try {
-    const [orgData, statusData] = await Promise.all([
+    const [orgData, statusData, signalConfig] = await Promise.all([
       api("/v1/orgs/" + encodeURIComponent(currentOrg)),
       api("/admin/status").catch(() => []),
+      api("/v1/orgs/" + encodeURIComponent(currentOrg) + "/signal-config").catch(() => ({ engine_weights: {}, signal_overrides: {}, known_signals: [] })),
     ]);
 
     const thresholds = typeof orgData.thresholds === "string" ? JSON.parse(orgData.thresholds) : (orgData.thresholds || {});
+    _policyThresholds = thresholds;
 
     // Calculate cold-start ramp
     const onboarded = orgData.onboarded_at ? new Date(orgData.onboarded_at) : null;
@@ -1330,6 +1487,31 @@ async function renderPolicies() {
         '<span style="width:8px;height:8px;border-radius:50%;background:var(--' + dot + ');"></span>' +
         '<span style="font-size:12px;">' + esc(s.name) + '</span>' +
         '<span style="margin-left:auto;font-size:11px;color:var(--muted);">' + (s.status === "ok" ? s.latency_ms + 'ms' : 'down') + '</span></div>';
+    }).join("");
+
+    // Engine scaling table
+    const defaultEngineWeights = { rspamd: 1.5, slm: 1.0, stats_db: 1.0, graph_db: 1.0, url_scanner: 1.0, specialized_ml: 1.0 };
+    const ew = signalConfig.engine_weights || defaultEngineWeights;
+    const engineRows = Object.entries(defaultEngineWeights).map(function(entry) {
+      var name = entry[0], def = entry[1];
+      var cur = ew[name] != null ? ew[name] : def;
+      return '<tr><td>' + esc(name) + '</td>' +
+        '<td><input type="number" class="ew-input" data-engine="' + esc(name) + '" value="' + cur + '" step="0.1" min="0" style="width:70px;"></td>' +
+        '<td style="color:var(--muted);">' + def + '</td></tr>';
+    }).join("");
+
+    // Signal overrides table
+    var knownSignals = signalConfig.known_signals || [];
+    var signalRows = knownSignals.map(function(s) {
+      var isMuted = s.weight === 0;
+      return '<tr class="sig-row" data-signal="' + esc(s.signal) + '" data-engine="' + esc(s.engine) + '">' +
+        '<td title="' + esc(s.signal) + '">' + esc(s.signal) + '</td>' +
+        '<td>' + esc(s.engine) + '</td>' +
+        '<td style="text-align:right;">' + s.fire_count + '</td>' +
+        '<td style="text-align:right;">' + s.avg_score + '</td>' +
+        '<td><input type="number" class="so-input" data-signal="' + esc(s.signal) + '" value="' + s.weight + '" step="0.1" min="0" style="width:70px;"></td>' +
+        '<td><button class="btn ' + (isMuted ? "primary" : "") + ' mute-btn" data-signal="' + esc(s.signal) + '" style="font-size:11px;padding:2px 8px;" onclick="toggleMuteSignal(this)">' + (isMuted ? "Unmute" : "Mute") + '</button></td>' +
+        '</tr>';
     }).join("");
 
     document.getElementById("app").innerHTML =
@@ -1361,14 +1543,137 @@ async function renderPolicies() {
         '</div>' +
       '</div>' +
 
+      // Engine Scaling
+      '<div class="panel"><h3>Engine Scaling</h3>' +
+        '<p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Multiply all scores from an engine by its weight. Set to 0 to disable an engine.</p>' +
+        '<table><thead><tr><th>Engine</th><th>Weight</th><th>Default</th></tr></thead>' +
+        '<tbody>' + engineRows + '</tbody></table>' +
+        '<button class="btn primary" style="margin-top:8px;" onclick="saveEngineWeights()">Save Engine Weights</button>' +
+      '</div>' +
+
+      // Signal Overrides
+      '<div class="panel"><h3>Signal Weight Overrides</h3>' +
+        '<p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Fine-tune individual signal weights. Mute noisy signals by setting weight to 0.</p>' +
+        '<input type="text" id="sig-filter" placeholder="Search signals..." oninput="filterSignals()" style="width:100%;padding:6px 10px;margin-bottom:8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;">' +
+        (knownSignals.length > 0 ?
+          '<div style="max-height:400px;overflow-y:auto;">' +
+          '<table><thead><tr><th>Signal</th><th>Engine</th><th style="text-align:right;">Fires</th><th style="text-align:right;">Avg Score</th><th>Weight</th><th></th></tr></thead>' +
+          '<tbody id="sig-tbody">' + signalRows + '</tbody></table></div>' +
+          '<button class="btn primary" style="margin-top:8px;" onclick="saveSignalOverrides()">Save Signal Overrides</button>'
+          : '<div class="empty">No signals recorded yet. Analyze some emails first.</div>') +
+      '</div>' +
+
       // Engine status
       '<div class="panel"><h3>Engine Status</h3>' +
         '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;">' + engineCards + '</div>' +
+      '</div>' +
+
+      // Domain Management
+      '<div class="panel" id="domain-mgmt-panel"><h3>Domain Management</h3>' +
+        '<div id="domain-list" style="margin-bottom:10px;"><span style="font-size:12px;color:var(--muted);">Loading domains...</span></div>' +
+        '<div style="display:flex;gap:8px;">' +
+          '<input id="add-domain-input" placeholder="newdomain.com" style="flex:1;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;">' +
+          '<button class="btn" style="font-size:12px;" onclick="addOrgDomain()">Add Domain</button>' +
+        '</div>' +
+      '</div>' +
+
+      // Integration Status
+      '<div class="panel" id="integration-panel"><h3>Integration Status</h3>' +
+        '<div id="integration-info"><span style="font-size:12px;color:var(--muted);">Loading...</span></div>' +
       '</div>';
+
+    // Load domain and integration data asynchronously
+    loadDomainPanel();
+    loadIntegrationPanel();
 
   } catch (e) {
     document.getElementById("app").innerHTML = '<div class="empty">Error: ' + esc(e.message) + '</div>';
   }
+}
+
+async function loadDomainPanel() {
+  if (!currentOrg) return;
+  try {
+    var data = await api("/v1/orgs/" + encodeURIComponent(currentOrg) + "/domains");
+    var domains = data.domains || [];
+    var el = document.getElementById("domain-list");
+    if (!el) return;
+    if (domains.length === 0) {
+      el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0;">No domains registered.</div>';
+      return;
+    }
+    el.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+      '<thead><tr><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--border);">Domain</th>' +
+      '<th style="padding:6px 8px;border-bottom:1px solid var(--border);">Status</th>' +
+      '<th style="padding:6px 8px;border-bottom:1px solid var(--border);">Added</th>' +
+      '<th style="padding:6px 8px;border-bottom:1px solid var(--border);"></th></tr></thead><tbody>' +
+      domains.map(function(d) {
+        var badge = d.verified
+          ? '<span class="badge allow" style="font-size:10px;">Verified</span>'
+          : '<span class="badge quarantine" style="font-size:10px;">Pending</span>';
+        return '<tr><td style="padding:6px 8px;border-bottom:1px solid var(--surface2);">' + esc(d.domain) + '</td>' +
+          '<td style="padding:6px 8px;border-bottom:1px solid var(--surface2);">' + badge + '</td>' +
+          '<td style="padding:6px 8px;border-bottom:1px solid var(--surface2);color:var(--muted);">' + fmtDate(d.created_at) + '</td>' +
+          '<td style="padding:6px 8px;border-bottom:1px solid var(--surface2);">' +
+            (!d.verified ? '<button class="btn" style="font-size:10px;padding:2px 8px;margin-right:4px;" onclick="verifyOrgDomain(\\'' + esc(d.domain) + '\\')">Verify</button>' : '') +
+            '<button class="btn" style="font-size:10px;padding:2px 8px;color:var(--crit);" onclick="removeOrgDomain(\\'' + esc(d.domain) + '\\')">Remove</button>' +
+          '</td></tr>';
+      }).join("") + '</tbody></table>';
+  } catch {}
+}
+
+async function loadIntegrationPanel() {
+  if (!currentOrg) return;
+  try {
+    var data = await api("/v1/orgs/" + encodeURIComponent(currentOrg) + "/integration-status");
+    var el = document.getElementById("integration-info");
+    if (!el) return;
+    var typeBadge = data.integration_type === "none"
+      ? '<span class="badge" style="background:var(--surface2);color:var(--muted);font-size:11px;">None</span>'
+      : '<span class="badge allow" style="font-size:11px;">' + esc(data.integration_type) + '</span>';
+    var statusBadge = data.status === "connected"
+      ? '<span class="badge allow" style="font-size:11px;">Connected</span>'
+      : data.status === "configured"
+        ? '<span class="badge note" style="font-size:11px;">Configured</span>'
+        : '<span class="badge quarantine" style="font-size:11px;">' + esc(data.status) + '</span>';
+    el.innerHTML =
+      '<div style="display:flex;align-items:center;gap:12px;padding:8px 0;">' +
+        '<div><span style="font-size:11px;color:var(--muted);text-transform:uppercase;">Type</span><br>' + typeBadge + '</div>' +
+        '<div><span style="font-size:11px;color:var(--muted);text-transform:uppercase;">Status</span><br>' + statusBadge + '</div>' +
+      '</div>' +
+      (data.integration_type === "smtp_relay" ? '<button class="btn" style="font-size:12px;margin-top:8px;" onclick="showToast(\\'SMTP relay: configure your MX records or gateway to point to the ETDP SMTP port.\\',\\'info\\')">View Setup</button>' : '') +
+      (data.integration_type.startsWith("oauth_") && data.status !== "connected" ? '<a class="btn" style="font-size:12px;margin-top:8px;display:inline-block;text-decoration:none;" href="/v1/oauth/' + data.integration_type.replace("oauth_","") + '/start?org_id=' + encodeURIComponent(currentOrg) + '">Reconnect</a>' : '');
+  } catch {}
+}
+
+async function addOrgDomain() {
+  var input = document.getElementById("add-domain-input");
+  var d = (input.value || "").trim().toLowerCase();
+  if (!d) { showToast("Enter a domain", "error"); return; }
+  try {
+    await apiPost("/v1/orgs/" + encodeURIComponent(currentOrg) + "/domains", { domain: d });
+    input.value = "";
+    showToast("Domain added", "success");
+    loadDomainPanel();
+  } catch (e) { showToast("Error: " + e.message, "error"); }
+}
+
+async function verifyOrgDomain(domain) {
+  try {
+    var data = await apiPost("/v1/orgs/" + encodeURIComponent(currentOrg) + "/domains/" + encodeURIComponent(domain) + "/verify", {});
+    if (data.verified) { showToast("Domain verified!", "success"); }
+    else { showToast("Add TXT record: _etdp-verify." + domain + " = " + (data.verify_token || ""), "error"); }
+    loadDomainPanel();
+  } catch (e) { showToast("Error: " + e.message, "error"); }
+}
+
+async function removeOrgDomain(domain) {
+  if (!confirm("Remove domain " + domain + "?")) return;
+  try {
+    await fetch("/v1/orgs/" + encodeURIComponent(currentOrg) + "/domains/" + encodeURIComponent(domain), { method: "DELETE" });
+    showToast("Domain removed", "success");
+    loadDomainPanel();
+  } catch (e) { showToast("Error: " + e.message, "error"); }
 }
 
 async function saveThresholds() {
@@ -1377,9 +1682,63 @@ async function saveThresholds() {
   if (isNaN(block) || isNaN(quarantine)) { showToast("Invalid threshold values", "error"); return; }
   if (quarantine >= block) { showToast("Quarantine threshold must be less than block", "error"); return; }
   try {
-    await apiPut("/v1/orgs/" + encodeURIComponent(currentOrg) + "/thresholds", { block, quarantine });
+    var merged = Object.assign({}, _policyThresholds, { block: block, quarantine: quarantine });
+    await apiPut("/v1/orgs/" + encodeURIComponent(currentOrg) + "/thresholds", merged);
+    _policyThresholds = merged;
     showToast("Thresholds saved!", "success");
   } catch (e) { showToast("Error: " + e.message, "error"); }
+}
+
+async function saveEngineWeights() {
+  try {
+    var ew = {};
+    document.querySelectorAll(".ew-input").forEach(function(input) {
+      ew[input.dataset.engine] = Number(input.value);
+    });
+    var merged = Object.assign({}, _policyThresholds, { engine_weights: ew });
+    await apiPut("/v1/orgs/" + encodeURIComponent(currentOrg) + "/thresholds", merged);
+    _policyThresholds = merged;
+    showToast("Engine weights saved!", "success");
+  } catch (e) { showToast("Error: " + e.message, "error"); }
+}
+
+async function saveSignalOverrides() {
+  try {
+    var so = Object.assign({}, _policyThresholds.signal_overrides || {});
+    document.querySelectorAll(".so-input").forEach(function(input) {
+      var val = Number(input.value);
+      if (val === 1.0) { delete so[input.dataset.signal]; }
+      else { so[input.dataset.signal] = val; }
+    });
+    var merged = Object.assign({}, _policyThresholds, { signal_overrides: so });
+    await apiPut("/v1/orgs/" + encodeURIComponent(currentOrg) + "/thresholds", merged);
+    _policyThresholds = merged;
+    showToast("Signal overrides saved!", "success");
+  } catch (e) { showToast("Error: " + e.message, "error"); }
+}
+
+function toggleMuteSignal(btn) {
+  var signal = btn.dataset.signal;
+  var input = document.querySelector('.so-input[data-signal="' + signal + '"]');
+  if (!input) return;
+  if (Number(input.value) === 0) {
+    input.value = "1";
+    btn.textContent = "Mute";
+    btn.classList.remove("primary");
+  } else {
+    input.value = "0";
+    btn.textContent = "Unmute";
+    btn.classList.add("primary");
+  }
+}
+
+function filterSignals() {
+  var q = (document.getElementById("sig-filter").value || "").toLowerCase();
+  document.querySelectorAll(".sig-row").forEach(function(row) {
+    var sig = (row.dataset.signal || "").toLowerCase();
+    var eng = (row.dataset.engine || "").toLowerCase();
+    row.style.display = (!q || sig.includes(q) || eng.includes(q)) ? "" : "none";
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1530,6 +1889,46 @@ function route() {
   }
 }
 
+// ── New Org Modal ──────────────────────────────────────────────────────
+function openNewOrgModal() {
+  document.getElementById("new-org-overlay").style.display = "block";
+  document.getElementById("new-org-modal").style.display = "block";
+  var nameInput = document.getElementById("no-name");
+  nameInput.value = "";
+  document.getElementById("no-orgid").value = "";
+  document.getElementById("no-domain").value = "";
+  nameInput.oninput = function() {
+    document.getElementById("no-orgid").value = nameInput.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 64);
+  };
+}
+
+function closeNewOrgModal() {
+  document.getElementById("new-org-overlay").style.display = "none";
+  document.getElementById("new-org-modal").style.display = "none";
+}
+
+async function submitNewOrg() {
+  var name = document.getElementById("no-name").value.trim();
+  var orgId = document.getElementById("no-orgid").value.trim();
+  var industry = document.getElementById("no-industry").value;
+  var domain = document.getElementById("no-domain").value.trim().toLowerCase();
+  if (!name || !orgId) { showToast("Name is required", "error"); return; }
+  try {
+    await apiPost("/v1/orgs", {
+      org_id: orgId,
+      name: name,
+      industry: industry,
+      domains: domain ? [domain] : [],
+    });
+    closeNewOrgModal();
+    showToast("Organization created!", "success");
+    currentOrg = orgId;
+    localStorage.setItem("etdp_soc_org", currentOrg);
+    await loadOrgs();
+    route();
+  } catch (e) { showToast("Error: " + e.message, "error"); }
+}
+
 // ── Org selector ───────────────────────────────────────────────────────
 async function loadOrgs() {
   try {
@@ -1564,8 +1963,21 @@ window.toggleRow = toggleRow;
 window.toggleAllRows = toggleAllRows;
 window.bulkAction = bulkAction;
 window.saveThresholds = saveThresholds;
+window.saveEngineWeights = saveEngineWeights;
+window.saveSignalOverrides = saveSignalOverrides;
+window.toggleMuteSignal = toggleMuteSignal;
+window.filterSignals = filterSignals;
 window.toggleTheme = toggleTheme;
 window.copyToClipboard = copyToClipboard;
+window.openNewOrgModal = openNewOrgModal;
+window.closeNewOrgModal = closeNewOrgModal;
+window.submitNewOrg = submitNewOrg;
+window.addOrgDomain = addOrgDomain;
+window.verifyOrgDomain = verifyOrgDomain;
+window.removeOrgDomain = removeOrgDomain;
+window.sortThreats = sortThreats;
+window.logout = logout;
+window.showToast = showToast;
 
 loadOrgs();
 route();

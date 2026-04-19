@@ -1,7 +1,7 @@
 // Shared Zod models. Mirrors PRD section 6.3.
 import { z } from "zod";
 
-export const Verdict = z.enum(["allow", "quarantine", "block"]);
+export const Verdict = z.enum(["allow", "note", "quarantine", "block"]);
 
 export const Label = z.enum([
   "ham",
@@ -11,6 +11,7 @@ export const Label = z.enum([
   "phishing",
   "bec",
   "malware",
+  "suspicious",
   "trash",
 ]);
 
@@ -20,7 +21,7 @@ export const OrgContext = z.object({
   business_hours_start: z.number().int().default(8),
   business_hours_end: z.number().int().default(20),
   stats_db_weight: z.number().default(1.0),
-  thresholds: z.record(z.number()).default({ block: 15, quarantine: 8 }),
+  thresholds: z.record(z.any()).default({ block: 15, quarantine: 8, note: 5 }),
 }).partial();
 
 export const Email = z.object({

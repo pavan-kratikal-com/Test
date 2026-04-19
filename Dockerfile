@@ -17,7 +17,15 @@ WORKDIR /app/service
 RUN sed -i 's|file:../../shared|file:/app/shared|g' package.json && \
     npm install --omit=dev --no-audit --no-fund
 
-COPY services/${SERVICE} /app/service
+# Copy service code (exclude node_modules to preserve correct symlinks)
+COPY services/${SERVICE} /tmp/service_src
+RUN cp -a /tmp/service_src/. /app/service/ 2>/dev/null; \
+    rm -rf /app/service/node_modules /tmp/service_src && \
+    sed -i 's|file:../../shared|file:/app/shared|g' package.json && \
+    npm install --omit=dev --no-audit --no-fund
+
+# Gateway needs db/migrations for provisionOrg
+COPY db /app/db
 
 EXPOSE 80
 CMD ["npm", "start"]

@@ -264,6 +264,58 @@ export function analyze(email) {
   // Structural group
   signals.push(...detectMimeAnomalies(email));
 
+  // ── Per-sender header behavioral analysis ─────────────────────────────
+
+  // header_client_drift: sender's X-Mailer or User-Agent changed.
+  const senderHeaderFp = email._sender_header_fingerprint || null;
+  const xMailer = email.headers?.["X-Mailer"] || email.headers?.["x-mailer"]
+    || email.headers?.["User-Agent"] || email.headers?.["user-agent"] || "";
+  if (senderHeaderFp && senderHeaderFp.x_mailer && xMailer
+      && senderHeaderFp.sample_count >= 5) {
+    const knownMailer = senderHeaderFp.x_mailer.toLowerCase();
+    const currentMailer = xMailer.toLowerCase();
+    if (!currentMailer.includes(knownMailer.split("/")[0])
+        && !knownMailer.includes(currentMailer.split("/")[0])) {
+      signals.push(sig("header_client_drift", 1.8,
+        { known_client: senderHeaderFp.x_mailer, current_client: xMailer }));
+    }
+  }
+
+  // header_infra_fingerprint: sending infrastructure pattern changed.
+  const received = [];
+  if (email.headers) {
+    for (const [k, v] of Object.entries(email.headers)) {
+      if (k.toLowerCase() === "received") {
+        if (Array.isArray(v)) { for (const h of v) received.push(String(h)); }
+        else received.push(String(v));
+      }
+    }
+  }
+  if (senderHeaderFp && senderHeaderFp.avg_received_hops > 0
+      && senderHeaderFp.sample_count >= 5) {
+    const currentHops = received.length;
+    const expectedHops = senderHeaderFp.avg_received_hops;
+    if (Math.abs(currentHops - expectedHops) > 2) {
+      signals.push(sig("header_infra_fingerprint", 1.5,
+        { expected_hops: Number(expectedHops.toFixed(1)), current_hops: currentHops }));
+    }
+  }
+
+  // header_persona_inconsistency: claims executive title but infrastructure
+  // looks like a bulk sender or doesn't match corporate mail server.
+  const fromHeader = email.headers?.From || email.headers?.from || "";
+  const titleMatch = /\b(ceo|cfo|cto|coo|vp|director|president|chief|executive)\b/i.test(fromHeader);
+  if (titleMatch) {
+    const hasPhpHeader = email.headers?.["x-php-originating-script"]
+      || email.headers?.["X-PHP-Originating-Script"];
+    const hasBulkPrecedence = /bulk|list/i.test(
+      email.headers?.Precedence || email.headers?.precedence || "");
+    if (hasPhpHeader || hasBulkPrecedence) {
+      signals.push(sig("header_persona_inconsistency", 2.25,
+        { claimed_title: fromHeader.slice(0, 100), bulk_indicators: true }));
+    }
+  }
+
   return signals;
 }
 

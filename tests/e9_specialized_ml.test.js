@@ -176,3 +176,152 @@ test("analyze: missing Message-ID fires message_id_format_anomaly", () => {
 test("CONFUSABLES table has at least a dozen entries", () => {
   assert.ok(CONFUSABLES.size >= 12);
 });
+
+// ── header_client_drift ─────────────────────────────────────────────
+
+test("header_client_drift fires when X-Mailer changed from established fingerprint", () => {
+  const s = analyze(email({
+    sender: "alice@acme.com",
+    headers: {
+      From: "alice@acme.com", To: "bob@acme.com", Subject: "hi",
+      Date: "Mon, 01 Jan 2026 10:00:00 +0000",
+      "Message-ID": "<x@acme.com>",
+      "X-Mailer": "Thunderbird/115.0",
+    },
+    _sender_header_fingerprint: {
+      x_mailer: "Microsoft Outlook/16.0",
+      avg_received_hops: 3,
+      sample_count: 10,
+    },
+  }));
+  assert.ok(s.some((x) => x.signal === "header_client_drift"));
+});
+
+test("header_client_drift does NOT fire when mailer matches established fingerprint", () => {
+  const s = analyze(email({
+    sender: "alice@acme.com",
+    headers: {
+      From: "alice@acme.com", To: "bob@acme.com", Subject: "hi",
+      Date: "Mon, 01 Jan 2026 10:00:00 +0000",
+      "Message-ID": "<x@acme.com>",
+      "X-Mailer": "Microsoft Outlook/16.1",
+    },
+    _sender_header_fingerprint: {
+      x_mailer: "Microsoft Outlook/16.0",
+      avg_received_hops: 3,
+      sample_count: 10,
+    },
+  }));
+  assert.equal(s.some((x) => x.signal === "header_client_drift"), false);
+});
+
+test("header_client_drift does NOT fire when sample_count < 5", () => {
+  const s = analyze(email({
+    sender: "alice@acme.com",
+    headers: {
+      From: "alice@acme.com", To: "bob@acme.com", Subject: "hi",
+      Date: "Mon, 01 Jan 2026 10:00:00 +0000",
+      "Message-ID": "<x@acme.com>",
+      "X-Mailer": "Thunderbird/115.0",
+    },
+    _sender_header_fingerprint: {
+      x_mailer: "Microsoft Outlook/16.0",
+      avg_received_hops: 3,
+      sample_count: 2,
+    },
+  }));
+  assert.equal(s.some((x) => x.signal === "header_client_drift"), false);
+});
+
+// ── header_infra_fingerprint ────────────────────────────────────────
+
+test("header_infra_fingerprint fires when Received hops differ by >2 from average", () => {
+  const s = analyze(email({
+    sender: "alice@acme.com",
+    headers: {
+      From: "alice@acme.com", To: "bob@acme.com", Subject: "hi",
+      Date: "Mon, 01 Jan 2026 10:00:00 +0000",
+      "Message-ID": "<x@acme.com>",
+      Received: [
+        "from a.com by b.com; Mon, 1 Jan 2026 10:00:00 +0000",
+        "from c.com by d.com; Mon, 1 Jan 2026 09:59:00 +0000",
+        "from e.com by f.com; Mon, 1 Jan 2026 09:58:00 +0000",
+        "from g.com by h.com; Mon, 1 Jan 2026 09:57:00 +0000",
+        "from i.com by j.com; Mon, 1 Jan 2026 09:56:00 +0000",
+        "from k.com by l.com; Mon, 1 Jan 2026 09:55:00 +0000",
+      ],
+    },
+    _sender_header_fingerprint: {
+      x_mailer: "",
+      avg_received_hops: 2,
+      sample_count: 10,
+    },
+  }));
+  assert.ok(s.some((x) => x.signal === "header_infra_fingerprint"));
+});
+
+test("header_infra_fingerprint does NOT fire when hops are within normal range", () => {
+  const s = analyze(email({
+    sender: "alice@acme.com",
+    headers: {
+      From: "alice@acme.com", To: "bob@acme.com", Subject: "hi",
+      Date: "Mon, 01 Jan 2026 10:00:00 +0000",
+      "Message-ID": "<x@acme.com>",
+      Received: [
+        "from a.com by b.com; Mon, 1 Jan 2026 10:00:00 +0000",
+        "from c.com by d.com; Mon, 1 Jan 2026 09:59:00 +0000",
+        "from e.com by f.com; Mon, 1 Jan 2026 09:58:00 +0000",
+      ],
+    },
+    _sender_header_fingerprint: {
+      x_mailer: "",
+      avg_received_hops: 3,
+      sample_count: 10,
+    },
+  }));
+  assert.equal(s.some((x) => x.signal === "header_infra_fingerprint"), false);
+});
+
+// ── header_persona_inconsistency ────────────────────────────────────
+
+test("header_persona_inconsistency fires when From claims exec title with PHP originating script", () => {
+  const s = analyze(email({
+    sender: "ceo@sketchy.com",
+    headers: {
+      From: "CEO John Smith <ceo@sketchy.com>",
+      To: "bob@acme.com", Subject: "Urgent",
+      Date: "Mon, 01 Jan 2026 10:00:00 +0000",
+      "Message-ID": "<x@sketchy.com>",
+      "X-PHP-Originating-Script": "1234:mailer.php",
+    },
+  }));
+  assert.ok(s.some((x) => x.signal === "header_persona_inconsistency"));
+});
+
+test("header_persona_inconsistency fires when From claims exec title with bulk Precedence", () => {
+  const s = analyze(email({
+    sender: "director@sketchy.com",
+    headers: {
+      From: "Director of Operations <director@sketchy.com>",
+      To: "bob@acme.com", Subject: "Urgent",
+      Date: "Mon, 01 Jan 2026 10:00:00 +0000",
+      "Message-ID": "<x@sketchy.com>",
+      Precedence: "bulk",
+    },
+  }));
+  assert.ok(s.some((x) => x.signal === "header_persona_inconsistency"));
+});
+
+test("header_persona_inconsistency does NOT fire when From has no exec title", () => {
+  const s = analyze(email({
+    sender: "alice@sketchy.com",
+    headers: {
+      From: "Alice Smith <alice@sketchy.com>",
+      To: "bob@acme.com", Subject: "Hello",
+      Date: "Mon, 01 Jan 2026 10:00:00 +0000",
+      "Message-ID": "<x@sketchy.com>",
+      "X-PHP-Originating-Script": "1234:mailer.php",
+    },
+  }));
+  assert.equal(s.some((x) => x.signal === "header_persona_inconsistency"), false);
+});

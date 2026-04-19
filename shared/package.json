@@ -11,10 +11,13 @@
     "./kafka": "./kafka.js",
     "./logreg": "./logreg.js",
     "./features": "./features.js",
-    "./modelRegistry": "./modelRegistry.js"
+    "./modelRegistry": "./modelRegistry.js",
+    "./rdap": "./rdap.js",
+    "./emlParser": "./emlParser.js"
   },
   "dependencies": {
     "express": "^4.21.0",
+    "mailparser": "^3.7.1",
     "kafkajs": "^2.2.4",
     "mysql2": "^3.11.3",
     "redis": "^4.7.0",

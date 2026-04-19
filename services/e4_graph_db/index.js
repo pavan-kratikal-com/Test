@@ -49,6 +49,7 @@ async function loadContext(email) {
 
   const [
     senderNode, edge, trust, internalCount, displayHit, last48hBurst, reciprocal,
+    senderEdgeCount, recipientInbound, senderClique,
   ] = await Promise.all([
     safeOrgQuery(orgId,
       `SELECT total_sent, total_received, first_seen, last_seen, is_internal, department
@@ -91,10 +92,32 @@ async function loadContext(email) {
       `SELECT count FROM graph_edges WHERE org_id=? AND src=? AND dst=? LIMIT 1`,
       [orgId, recipient, sender],
     ).then((r) => r.ok ? Number(r.rows[0]?.count || 0) : 0) : Promise.resolve(0),
+
+    // Total distinct recipients this sender has ever contacted.
+    safeOrgQuery(orgId,
+      `SELECT COUNT(DISTINCT dst) AS c FROM graph_edges WHERE org_id=? AND src=?`,
+      [orgId, sender],
+    ).then((r) => r.ok ? Number(r.rows[0]?.c || 0) : 0),
+
+    // Inbound edge count to recipient (how many senders have emailed this recipient).
+    recipient ? safeOrgQuery(orgId,
+      `SELECT COUNT(DISTINCT src) AS c FROM graph_edges WHERE org_id=? AND dst=?`,
+      [orgId, recipient],
+    ).then((r) => r.ok ? Number(r.rows[0]?.c || 0) : 0) : Promise.resolve(0),
+
+    // Sender's typical communication group (top 5 recipients by count).
+    cached(`graph:clique:${orgId}:${sender}`, 120, () =>
+      safeOrgQuery(orgId,
+        `SELECT dst, count FROM graph_edges
+         WHERE org_id=? AND src=? ORDER BY count DESC LIMIT 5`,
+        [orgId, sender],
+      ).then((r) => r.ok ? r.rows : []),
+    ),
   ]);
 
   return { orgId, sender, recipient, display, normalized,
-    senderNode, edge, trust, internalCount, displayHit, last48hBurst, reciprocal };
+    senderNode, edge, trust, internalCount, displayHit, last48hBurst, reciprocal,
+    senderEdgeCount, recipientInbound, senderClique };
 }
 
 function extractSignals(email, ctx, orgCtx = {}) {
@@ -227,6 +250,67 @@ function extractSignals(email, ctx, orgCtx = {}) {
     // (Heuristic — real LDAP integration would give exact matches.)
   }
   // alias_chain — DATA_DEP (needs cross-domain identity graph).
+
+  // ── Topology & relationship signals ─────────────────────────────────
+  // hierarchy_violation: external sender directly contacts many internal recipients
+  // but has no established trust with any of them.
+  if (!senderKnown && senderIsExternal && ctx.internalCount > 20) {
+    const recipients = email.recipients || [];
+    if (recipients.length >= 3) {
+      signals.push(sig("hierarchy_violation", 2.25,
+        { recipient_count: recipients.length, org_size: ctx.internalCount }));
+    }
+  }
+
+  // clique_penetration: external sender reaches into a tight internal communication group.
+  if (senderIsExternal && (ctx.senderClique || []).length === 0 && (ctx.recipientInbound || 0) > 0) {
+    // Recipient has many inbound contacts but sender is completely new.
+    if (ctx.recipientInbound >= 10 && !ctx.edge) {
+      signals.push(sig("clique_penetration", 1.8,
+        { recipient_inbound_contacts: ctx.recipientInbound }));
+    }
+  }
+
+  // department_boundary_cross: sender's department differs from recipient's.
+  if (ctx.senderNode?.department && ctx.recipient) {
+    // Look up recipient's department if available.
+    // This fires when sender has department set but crosses to a recipient
+    // they've never contacted (first-time pair in a different dept).
+    if (!ctx.edge && ctx.senderNode.is_internal === 1) {
+      signals.push(sig("department_boundary_cross", 1.5,
+        { sender_dept: ctx.senderNode.department }));
+    }
+  }
+
+  // org_flow_reversal: this sender's org normally receives from us, not initiates.
+  if (ctx.senderNode && ctx.reciprocal > 10 && (!ctx.edge || Number(ctx.edge.count) <= 1)) {
+    // We've sent 10+ emails to this sender, but they've barely emailed us.
+    signals.push(sig("org_flow_reversal", 2.25,
+      { our_outbound: ctx.reciprocal, their_inbound: ctx.edge ? Number(ctx.edge.count) : 0 }));
+  }
+
+  // relationship_tempo_break: established pair suddenly changes communication frequency.
+  if (ctx.edge && Number(ctx.edge.count) >= 20) {
+    const ageDays = Math.max(1, (Date.now() - new Date(ctx.edge.first_seen).getTime()) / 86400000);
+    const historicRate = Number(ctx.edge.count) / ageDays;
+    // If last contact was >3x the average gap, this is a tempo break.
+    const lastGapDays = (Date.now() - new Date(ctx.edge.last_seen).getTime()) / 86400000;
+    const avgGapDays = ageDays / Number(ctx.edge.count);
+    if (lastGapDays > avgGapDays * 3 && lastGapDays > 14) {
+      signals.push(sig("relationship_tempo_break", 1.5,
+        { avg_gap_days: Number(avgGapDays.toFixed(1)), last_gap_days: Math.round(lastGapDays),
+          total_count: ctx.edge.count }));
+    }
+  }
+
+  // shadow_hierarchy_deviation: sender claims authority via display name but
+  // has no corresponding trust/communication pattern.
+  if (ctx.display && ctx.trust && ctx.trust.trust_score < 0.1
+      && /\b(ceo|cfo|cto|coo|vp|director|president|chief)\b/i.test(ctx.display)
+      && senderIsExternal) {
+    signals.push(sig("shadow_hierarchy_deviation", 2.7,
+      { display_name: ctx.display, trust_score: ctx.trust.trust_score }));
+  }
 
   return signals;
 }

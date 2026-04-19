@@ -65,7 +65,12 @@ services:
       MYSQL_MULTI_TENANT: "1"
       REDIS_URL: redis://redis:6379
       KAFKA_BROKERS: kafka:9092
-    ports: ["8000:8000"]
+      SMTP_PORT: "2525"
+      # SMTP_TLS_KEY: /certs/key.pem
+      # SMTP_TLS_CERT: /certs/cert.pem
+    ports:
+      - "8000:8000"
+      - "2525:2525"
     depends_on:
       migrate: { condition: service_completed_successfully }
       e1_rspamd: { condition: service_started }
@@ -108,11 +113,11 @@ services:
     restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e2_slm } }
     environment:
-      SLM_BASE_URL: "${SLM_BASE_URL:-}"
+      SLM_BASE_URL: "${SLM_BASE_URL:-http://host.docker.internal:7070/v1}"
       SLM_API_KEY: "${SLM_API_KEY:-}"
-      SLM_MODEL: "${SLM_MODEL:-llama3}"
-      SLM_TIMEOUT: "${SLM_TIMEOUT:-8000}"
-      SLM_ENABLED: "${SLM_ENABLED:-0}"
+      SLM_MODEL: "${SLM_MODEL:-mlx-community/gemma-4-e4b-it-4bit}"
+      SLM_TIMEOUT: "${SLM_TIMEOUT:-30000}"
+      SLM_ENABLED: "${SLM_ENABLED:-1}"
   e3_stats_db:
     restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e3_stats_db } }

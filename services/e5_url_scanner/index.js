@@ -306,6 +306,38 @@ export async function analyze(email) {
 
   const perUrl = await Promise.all(unique.map((u) => scanUrl(u).catch(() => [])));
   const flat = perUrl.flat();
+  // Behavioral: url_sender_url_mismatch — sender has never sent URLs from these domains.
+  // This requires per-org context (sender URL history), so we check the email payload.
+  const sender = email.sender || "";
+  const senderUrlDomains = email._sender_url_domains || null; // injected by gateway if available
+  if (senderUrlDomains && unique.length > 0) {
+    for (const u of unique) {
+      const parsed = parseUrlSafe(u);
+      if (parsed) {
+        const urlDom = registrableDomain(parsed.hostname);
+        if (urlDom && !senderUrlDomains.includes(urlDom)) {
+          flat.push(sig("url_sender_url_mismatch", 1.8,
+            { sender, url_domain: urlDom, known_domains: senderUrlDomains.slice(0, 5) }));
+          break; // one signal per email
+        }
+      }
+    }
+  }
+
+  // Behavioral: url_behavioral_novelty — URL domain registered <7d (via RDAP data in email).
+  const rdapData = email._rdap_url_data || null;
+  if (rdapData) {
+    for (const [urlDom, data] of Object.entries(rdapData)) {
+      if (data.registration_date) {
+        const ageDays = (Date.now() - new Date(data.registration_date).getTime()) / 86400000;
+        if (ageDays < 7) {
+          flat.push(sig("url_behavioral_novelty", 3.0,
+            { url_domain: urlDom, age_days: Number(ageDays.toFixed(1)) }));
+        }
+      }
+    }
+  }
+
   flat.push(sig("urls_present", 0, { count: unique.length, unique_hosts: new Set(unique.map((u) => parseUrlSafe(u)?.hostname).filter(Boolean)).size }));
   return flat;
 }

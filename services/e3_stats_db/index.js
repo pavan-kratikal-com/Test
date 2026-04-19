@@ -11,6 +11,7 @@
 import { makeApp, listen } from "@etdp/shared/engineBase";
 import { safeOrgQuery } from "@etdp/shared/mysql";
 import { cached } from "@etdp/shared/cache";
+import { lookupRdapCached, fetchRdapBackground } from "@etdp/shared/rdap";
 import * as ss from "simple-statistics";
 
 const URL_RE = /https?:\/\/[^\s<>"']+/gi;
@@ -66,6 +67,7 @@ async function loadContext(email) {
   const [
     senderHist, pairHist, domainRow, senderDaily, senderHourly,
     senderAgg, orgInternalDomains, domainRecent, recipientFanout24h,
+    rdapData, fingerprint,
   ] = await Promise.all([
     // Overall sender history: counts and date bounds.
     cached(`sh:${orgId}:${sender}`, 30, () =>
@@ -126,11 +128,21 @@ async function loadContext(email) {
        WHERE org_id=? AND sender=? AND last_seen > NOW() - INTERVAL 1 DAY`,
       [orgId, sender],
     ).then((r) => r.ok ? Number(r.rows[0]?.cnt || 0) : 0),
+    // RDAP domain registration cache lookup.
+    lookupRdapCached(domain),
+    // Sender behavioral fingerprint.
+    safeOrgQuery(orgId,
+      `SELECT sample_count, avg_body_length, stddev_body_length, avg_subject_length,
+              html_ratio, avg_link_count, avg_attachment_count, avg_recipients
+       FROM sender_fingerprint WHERE org_id=? AND sender=? LIMIT 1`,
+      [orgId, sender],
+    ).then((r) => r.ok ? (r.rows[0] || null) : null),
   ]);
 
   return { orgId, sender, domain, recipient, ts,
     senderHist, pairHist, domainRow, senderDaily, senderHourly,
-    senderAgg, orgInternalDomains, domainRecent, recipientFanout24h };
+    senderAgg, orgInternalDomains, domainRecent, recipientFanout24h,
+    rdapData, fingerprint };
 }
 
 // Each signal returns Signal | null. All run against the shared context.
@@ -447,12 +459,88 @@ export function extractSignals(email, ctx, orgCtx = {}) {
     }
   }
 
-  // sender_domain_age_risk: domain first seen < 7 days ago.
-  if (ctx.domainRow?.first_seen) {
+  // sender_domain_age_risk / newly_registered_domain: RDAP-based with org fallback.
+  if (ctx.rdapData?.registration_date && ctx.rdapData.rdap_status === "ok") {
+    const regAgeDays = (Date.now() - new Date(ctx.rdapData.registration_date).getTime()) / 86400000;
+    if (regAgeDays < 30) {
+      signals.push(sig("newly_registered_domain", 3.0,
+        { domain: ctx.domain, age_days: Number(regAgeDays.toFixed(1)), source: "rdap" }));
+    } else if (regAgeDays < 365) {
+      signals.push(sig("sender_domain_age_risk", 1.5,
+        { domain: ctx.domain, age_days: Number(regAgeDays.toFixed(1)), source: "rdap" }));
+    }
+    // > 365 days → no signal
+  } else if (ctx.domainRow?.first_seen) {
+    // Fallback: org-level first_seen (existing behavior).
     const ageDays = (Date.now() - new Date(ctx.domainRow.first_seen).getTime()) / 86400000;
     if (ageDays < 7) {
       signals.push(sig("sender_domain_age_risk", 1.5,
-        { domain: ctx.domain, age_days: Number(ageDays.toFixed(1)) }));
+        { domain: ctx.domain, age_days: Number(ageDays.toFixed(1)), source: "org_first_seen" }));
+    }
+  }
+
+  // ── Group: Sender fingerprint ──────────────────────────────────────────
+  if (ctx.fingerprint && ctx.fingerprint.sample_count >= 10) {
+    const fp = ctx.fingerprint;
+    let deviations = 0;
+    if (fp.stddev_body_length > 0 && Math.abs(bodyLen - fp.avg_body_length) > fp.stddev_body_length * 3) deviations++;
+    const subjectLen = (email.subject || "").length;
+    if (fp.avg_subject_length > 0 && Math.abs(subjectLen - fp.avg_subject_length) > fp.avg_subject_length * 2) deviations++;
+    if (fp.avg_link_count < 0.5 && linkCount >= 3) deviations++;
+    if (fp.avg_attachment_count < 0.1 && attCount >= 1) deviations++;
+    if (deviations >= 3) {
+      signals.push(sig("sender_style_deviation", 2.25,
+        { deviations, sample_count: fp.sample_count }));
+    }
+  }
+
+  // ── Group: Thread structural signals ───────────────────────────────────
+  const thread = email.thread || [];
+  if (thread.length > 0) {
+    // thread_participant_injection: new sender in existing thread.
+    const priorSenders = new Set(thread.map((m) => m.sender));
+    if (!priorSenders.has(ctx.sender) && priorSenders.size > 0) {
+      signals.push(sig("thread_participant_injection", 2.5,
+        { new_sender: ctx.sender, thread_participants: [...priorSenders] }));
+    }
+
+    // thread_reply_to_hijack: Reply-To domain changed mid-thread.
+    const replyTo = email.headers?.reply_to || email.headers?.["Reply-To"] || "";
+    if (replyTo.includes("@")) {
+      const replyDomain = replyTo.split("@").pop().toLowerCase().replace(/>.*$/, "");
+      const threadDomains = new Set(thread.map((m) => m.sender_domain || m.sender.split("@")[1]).filter(Boolean));
+      if (replyDomain && threadDomains.size > 0 && !threadDomains.has(replyDomain)) {
+        signals.push(sig("thread_reply_to_hijack", 3.5,
+          { reply_to_domain: replyDomain, thread_domains: [...threadDomains] }));
+      }
+    }
+
+    // thread_velocity_spike: conversation pace suddenly accelerates.
+    if (thread.length >= 3) {
+      const timestamps = thread.map((m) => new Date(m.ts).getTime()).filter((t) => !Number.isNaN(t));
+      if (timestamps.length >= 3) {
+        const lastGap = Date.now() - timestamps[timestamps.length - 1];
+        const avgGap = (timestamps[timestamps.length - 1] - timestamps[0]) / (timestamps.length - 1);
+        if (avgGap > 86400000 && lastGap < 3600000) {
+          signals.push(sig("thread_velocity_spike", 1.8,
+            { avg_gap_hours: Math.round(avgGap / 3600000), last_gap_hours: Number((lastGap / 3600000).toFixed(1)) }));
+        }
+      }
+    }
+  }
+
+  // behavior_changepoint: detect abrupt shift in sender's behavioral distribution.
+  if (ctx.senderHist?.last_seen && ctx.fingerprint?.sample_count >= 20) {
+    const fp = ctx.fingerprint;
+    let shiftCount = 0;
+    if (fp.stddev_body_length > 0 && Math.abs(bodyLen - fp.avg_body_length) > fp.stddev_body_length * 2) shiftCount++;
+    if (fp.avg_link_count >= 0.1 && linkCount === 0) shiftCount++;
+    if (fp.avg_link_count < 0.3 && linkCount >= 3) shiftCount++;
+    if (fp.avg_attachment_count < 0.1 && attCount >= 1) shiftCount++;
+    if (hour < 6 || hour > 22) shiftCount++;  // unusual hour for most senders
+    if (shiftCount >= 4) {
+      signals.push(sig("behavior_changepoint", 2.7,
+        { dimensions_shifted: shiftCount, sample_count: fp.sample_count }));
     }
   }
 
@@ -514,6 +602,47 @@ async function persist(email, ctx) {
      ON DUPLICATE KEY UPDATE email_count = email_count + 1`,
     [ctx.orgId, ctx.sender, ctx.ts.getUTCHours(), ctx.ts.getUTCDay()],
   );
+
+  // Upsert sender fingerprint running averages.
+  const hasHtml = (email.body_html || "").length > 0 ? 1 : 0;
+  const recipients = email.recipients || [];
+  await safeOrgQuery(ctx.orgId,
+    `INSERT INTO sender_fingerprint
+       (org_id, sender, sample_count, avg_body_length, stddev_body_length,
+        avg_subject_length, html_ratio, avg_link_count, avg_attachment_count,
+        avg_recipients, typical_hours, typical_days, updated_at)
+     VALUES (?, ?, 1, ?, 0, ?, ?, ?, ?, ?, 1 << ?, 1 << ?, NOW(3))
+     ON DUPLICATE KEY UPDATE
+       avg_body_length = ((avg_body_length * sample_count) + VALUES(avg_body_length)) / (sample_count + 1),
+       stddev_body_length = SQRT(
+         ((sample_count - 1) * POW(stddev_body_length, 2) +
+          (VALUES(avg_body_length) - avg_body_length) *
+          (VALUES(avg_body_length) - ((avg_body_length * sample_count) + VALUES(avg_body_length)) / (sample_count + 1))
+         ) / sample_count
+       ),
+       avg_subject_length = ((avg_subject_length * sample_count) + VALUES(avg_subject_length)) / (sample_count + 1),
+       html_ratio = ((html_ratio * sample_count) + VALUES(html_ratio)) / (sample_count + 1),
+       avg_link_count = ((avg_link_count * sample_count) + VALUES(avg_link_count)) / (sample_count + 1),
+       avg_attachment_count = ((avg_attachment_count * sample_count) + VALUES(avg_attachment_count)) / (sample_count + 1),
+       avg_recipients = ((avg_recipients * sample_count) + VALUES(avg_recipients)) / (sample_count + 1),
+       typical_hours = typical_hours | (1 << VALUES(typical_hours)),
+       typical_days = typical_days | (1 << VALUES(typical_days)),
+       sample_count = sample_count + 1,
+       updated_at = NOW(3)`,
+    [ctx.orgId, ctx.sender, bodyLen, subjectLen, hasHtml, linkCount, attCount,
+     recipients.length, ctx.ts.getUTCHours(), ctx.ts.getUTCDay()],
+  );
+
+  // Persist thread reference for future thread assembly.
+  const inReplyTo = email.headers?.["In-Reply-To"] || email.headers?.in_reply_to || null;
+  const referencesHeader = email.headers?.References || email.headers?.references || null;
+  if (inReplyTo || referencesHeader) {
+    await safeOrgQuery(ctx.orgId,
+      `UPDATE email_metadata SET in_reply_to = ?, references_header = ?
+       WHERE org_id = ? AND message_id = ? LIMIT 1`,
+      [inReplyTo, referencesHeader, ctx.orgId, email.message_id],
+    );
+  }
 }
 
 // Apply the per-org ramp weight (0 → 1 over 30 days) to every signal score.
@@ -529,6 +658,7 @@ async function analyze(email) {
   const w = Number(orgCtx.stats_db_weight ?? 1.0);
   signals = applyWeight(signals, w);
   await persist(email, ctx);
+  if (!ctx.rdapData) fetchRdapBackground(ctx.domain);
   return signals;
 }
 

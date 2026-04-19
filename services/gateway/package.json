@@ -8,8 +8,10 @@
   },
   "dependencies": {
     "@etdp/shared": "file:../../shared",
+    "bcrypt": "^5.1.1",
     "express": "^4.21.0",
     "mysql2": "^3.11.3",
+    "smtp-server": "^3.13.0",
     "undici": "^6.20.0",
     "zod": "^3.23.8"
   }

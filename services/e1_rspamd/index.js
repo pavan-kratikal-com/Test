@@ -49,9 +49,9 @@ function buildMime(email) {
 
 async function callRspamd(email) {
   if (!RSPAMD_URL) throw new Error("RSPAMD_URL not configured");
-  const mime = buildMime(email);
+  const mime = email.raw_mime || buildMime(email);
   const headers = {
-    "Content-Type": "text/plain",
+    "Content-Type": email.raw_mime ? "message/rfc822" : "text/plain",
     "User-Agent": "etdp-e1/0.1",
     "Deliver-To": email.recipients?.[0] || "",
     "From": email.sender,
@@ -76,9 +76,8 @@ function rspamdToSignals(rspamdResp) {
   for (const name of Object.keys(symbols)) {
     const sym = symbols[name];
     const rawScore = Number(sym?.score || 0);
-    // Scale rspamd scores by 1.5× to map to ETDP's rspamd-aligned thresholds
-    // (5=header, 8=quarantine, 15=block).
-    const score = rawScore * 1.5;
+    // Raw score — engine scaling (default 1.5×) now applied in gateway aggregate()
+    const score = rawScore;
     if (rawScore === 0 && !/^(BAYES_SPAM|BAYES_HAM)$/.test(name)) continue;
     signals.push({
       engine: "rspamd",

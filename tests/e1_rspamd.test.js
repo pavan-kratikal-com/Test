@@ -35,7 +35,7 @@ test("E1 rspamd: both fallback signals fire when both fail", async () => {
   const names = signals.map((s) => s.signal).sort();
   assert.deepEqual(names, ["DMARC_POLICY_REJECT", "SPF_FAIL"]);
   const total = signals.reduce((a, s) => a + s.score, 0);
-  assert.equal(total, 5);
+  assert.equal(total, 7.5);
 });
 
 // ── buildMime: ensures the translator produces well-formed MIME ────────
