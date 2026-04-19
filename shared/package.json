@@ -13,7 +13,8 @@
     "./features": "./features.js",
     "./modelRegistry": "./modelRegistry.js",
     "./rdap": "./rdap.js",
-    "./emlParser": "./emlParser.js"
+    "./emlParser": "./emlParser.js",
+    "./whois": "./whois.js"
   },
   "dependencies": {
     "express": "^4.21.0",
