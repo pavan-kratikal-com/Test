@@ -33,6 +33,9 @@ import crypto from "node:crypto";
 import { request } from "undici";
 import { makeApp, listen } from "@etdp/shared/engineBase";
 import { safeQuery } from "@etdp/shared/mysql";
+import { cached, cacheGet, cacheSet } from "@etdp/shared/cache";
+import { lookupDomain, domainMetaSignals } from "@etdp/shared/whois";
+import { reputationSignals, seedBlocklist } from "@etdp/shared/reputation";
 
 const URL_RE = /https?:\/\/[^\s<>"'\x00-\x1f]+/gi;
 const URL_SHORTENERS = new Set([
@@ -44,12 +47,9 @@ const SUSPICIOUS_TLDS = [
   ".rest", ".country", ".cf", ".tk", ".ml", ".ga", ".gq",
 ];
 
-// Small seeded blocklist. Real impl queries SafeBrowsing/PhishTank/VirusTotal.
-const LOCAL_BLOCKLIST = new Set([
-  "login-microsft.top",
-  "paypa1-secure.zip",
-  "example-corp.click",
-]);
+// Seeded blocklist now lives in shared/reputation.js; kept as a fallback
+// when PhishTank is unreachable and Safe Browsing isn't configured.
+const LOCAL_BLOCKLIST = seedBlocklist();
 
 const MAX_REDIRECTS = 5;
 const HEAD_TIMEOUT_MS = 4_000;
@@ -232,29 +232,47 @@ async function analyzeLandingPage(url) {
 }
 
 // Pull a single URL through the full analysis pipeline (cache-first).
+// Cache layout (PRD §7.5):
+//   Primary:   Redis `url_scan:<sha256>` → JSON signals, 24h TTL
+//   Fallback:  MySQL url_scan_cache (audit trail, warm-up after Redis flush)
 async function scanUrl(rawUrl) {
   const hash = hashUrl(rawUrl);
-  // Cache lookup (24h TTL).
-  const cached = await safeQuery(
-    `SELECT final_url, redirect_hops, final_status, risk_score, signals, scanned_at
-     FROM url_scan_cache WHERE url_hash = ?
-       AND scanned_at > NOW() - INTERVAL 24 HOUR LIMIT 1`,
-    [hash],
+  const cacheKey = `url_scan:${hash}`;
+
+  // Redis first (fastest).
+  const redisHit = await cacheGet(cacheKey);
+  if (redisHit) {
+    try {
+      const signals = JSON.parse(redisHit);
+      signals.push(sig("url_scan_cache_hit", 0, { hash, source: "redis" }));
+      return signals;
+    } catch { /* fall through */ }
+  }
+
+  // MySQL fallback (persistent audit store).
+  const row = await safeQuery(
+    `SELECT signals FROM url_scan_cache WHERE url_hash = ?
+       AND scanned_at > NOW() - INTERVAL 24 HOUR LIMIT 1`, [hash],
   );
-  if (cached.ok && cached.rows.length > 0) {
-    const row = cached.rows[0];
-    const signals = typeof row.signals === "string" ? JSON.parse(row.signals) : row.signals;
-    signals.push(sig("url_scan_cache_hit", 0, { hash, scanned_at: row.scanned_at }));
+  if (row.ok && row.rows.length > 0) {
+    const signals = typeof row.rows[0].signals === "string"
+      ? JSON.parse(row.rows[0].signals) : row.rows[0].signals;
+    await cacheSet(cacheKey, JSON.stringify(signals), 24 * 3600);
+    signals.push(sig("url_scan_cache_hit", 0, { hash, source: "mysql" }));
     return signals;
   }
 
+  // No cache — run the full scan.
   const u = parseUrlSafe(rawUrl);
   const staticSignals = analyzeStaticUrl(u);
   let redirectSignals = [];
   let landingSignals = [];
+  let domainSignals = [];
+  let reputation = [];
   let redirResult = { chain: [rawUrl], domains: new Set(), finalUrl: rawUrl, status: null };
 
   if (u && /^https?:$/.test(u.protocol)) {
+    // Redirect chain + landing page (unchanged).
     redirResult = await followRedirects(rawUrl);
     if (redirResult.chain.length - 1 >= 3) {
       redirectSignals.push(sig("redirect_chain_long", 3.0,
@@ -265,21 +283,31 @@ async function scanUrl(rawUrl) {
         { domain_hops: redirResult.domains.size }));
     }
     if (redirResult.finalUrl !== rawUrl) {
-      // Analyze the final URL's static shape too.
-      redirectSignals.push(...analyzeStaticUrl(parseUrlSafe(redirResult.finalUrl)).map((s) => ({
-        ...s, detail: { ...s.detail, via: "final_url" },
-      })));
+      redirectSignals.push(...analyzeStaticUrl(parseUrlSafe(redirResult.finalUrl))
+        .map((s) => ({ ...s, detail: { ...s.detail, via: "final_url" } })));
     }
-    // Best-effort landing-page fetch.
     if (redirResult.status && redirResult.status >= 200 && redirResult.status < 400) {
       landingSignals = await analyzeLandingPage(redirResult.finalUrl);
     }
+
+    // Domain metadata (DNS / SOA / MX). Cached per-host for 1 hour.
+    const host = u.hostname.toLowerCase();
+    const meta = await cached(`dns:${host}`, 3600, () => lookupDomain(host));
+    domainSignals = domainMetaSignals(meta);
+
+    // External reputation.  PhishTank is always queried (offline falls
+    // back to seed list); Safe Browsing only when an API key is present.
+    reputation = await reputationSignals(rawUrl);
   }
 
-  const all = [...staticSignals, ...redirectSignals, ...landingSignals];
+  const all = [
+    ...staticSignals, ...redirectSignals, ...landingSignals,
+    ...domainSignals, ...reputation,
+  ];
   const risk = all.reduce((a, s) => a + (s.score || 0), 0);
 
-  // Persist to cache (truncate URL to column limit).
+  // Store in Redis (24h TTL) + MySQL (audit).
+  await cacheSet(cacheKey, JSON.stringify(all), 24 * 3600);
   await safeQuery(
     `INSERT INTO url_scan_cache
        (url_hash, url, final_url, redirect_hops, final_status, risk_score, signals)

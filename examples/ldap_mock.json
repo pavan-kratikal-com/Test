@@ -1,0 +1,44 @@
+{
+  "users": [
+    {
+      "address": "alice@acmecorp.com",
+      "display_name": "Alice Smith",
+      "department": "Finance",
+      "title": "CFO",
+      "is_internal": true,
+      "is_vip": true
+    },
+    {
+      "address": "bob@acmecorp.com",
+      "display_name": "Bob Jones",
+      "department": "Engineering",
+      "title": "CTO",
+      "is_internal": true,
+      "is_vip": true
+    },
+    {
+      "address": "carol@acmecorp.com",
+      "display_name": "Carol White",
+      "department": "Sales",
+      "title": "Account Executive",
+      "is_internal": true,
+      "is_vip": false
+    },
+    {
+      "address": "dave@acmecorp.com",
+      "display_name": "Dave Brown",
+      "department": "Finance",
+      "title": "Accountant",
+      "is_internal": true,
+      "is_vip": false
+    },
+    {
+      "address": "eve@acmecorp.com",
+      "display_name": "Eve Black",
+      "department": "Legal",
+      "title": "General Counsel",
+      "is_internal": true,
+      "is_vip": true
+    }
+  ]
+}
