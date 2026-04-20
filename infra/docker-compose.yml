@@ -113,9 +113,10 @@ services:
     restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e2_slm } }
     environment:
-      SLM_BASE_URL: "${SLM_BASE_URL:-http://host.docker.internal:7070/v1}"
+      SLM_BASE_URL: "${SLM_BASE_URL:-http://e10_classifier:7070/v1}"
       SLM_API_KEY: "${SLM_API_KEY:-}"
-      SLM_MODEL: "${SLM_MODEL:-mlx-community/gemma-4-e4b-it-4bit}"
+      SLM_MODEL: "${SLM_MODEL:-email-classifier-v1}"
+      SLM_MODE: "${SLM_MODE:-classifier}"
       SLM_TIMEOUT: "${SLM_TIMEOUT:-30000}"
       SLM_ENABLED: "${SLM_ENABLED:-1}"
   e3_stats_db:
@@ -154,6 +155,13 @@ services:
   e9_specialized_ml:
     restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e9_specialized_ml } }
+  e10_classifier:
+    restart: unless-stopped
+    build:
+      context: ../services/e10_classifier
+      dockerfile: Dockerfile
+    ports:
+      - "7070:7070"
   synthesizer:
     restart: unless-stopped
     build: { context: .., dockerfile: Dockerfile, args: { SERVICE: synthesizer } }

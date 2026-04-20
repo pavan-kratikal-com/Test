@@ -50,14 +50,25 @@ function buildMime(email) {
 async function callRspamd(email) {
   if (!RSPAMD_URL) throw new Error("RSPAMD_URL not configured");
   const mime = email.raw_mime || buildMime(email);
+
+  // Extract client IP from headers (upstream MTA sets these)
+  const emailHeaders = email.headers || {};
+  const clientIp = emailHeaders["x-client-ip"]
+    || emailHeaders["x-forwarded-for"]?.split(",")[0]?.trim()
+    || "127.0.0.1";
+
   const headers = {
     "Content-Type": email.raw_mime ? "message/rfc822" : "text/plain",
     "User-Agent": "etdp-e1/0.1",
     "Deliver-To": email.recipients?.[0] || "",
     "From": email.sender,
-    "IP": email.headers?.["X-Forwarded-For"] || "127.0.0.1",
+    "Rcpt": email.recipients?.[0] || "",
+    "IP": clientIp,
     "Message-Length": Buffer.byteLength(mime).toString(),
   };
+  // Pass HELO if available from upstream headers
+  const helo = emailHeaders["x-helo"] || emailHeaders["x-client-hostname"] || "";
+  if (helo) headers["Helo"] = helo;
   if (RSPAMD_PASSWORD) headers["Password"] = RSPAMD_PASSWORD;
   const { statusCode, body } = await request(`${RSPAMD_URL.replace(/\/$/, "")}/checkv2`, {
     method: "POST", headers, body: mime,

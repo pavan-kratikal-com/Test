@@ -58,14 +58,18 @@ const RSPAMD_PASSWORD = process.env.RSPAMD_PASSWORD || "";
 
 // Send raw MIME bytes directly to rspamd — no parsing, no field extraction.
 // Accepts a Buffer so the original bytes are never touched.
-async function callRspamdDirect(rawBuffer) {
+// smtpMeta: { ip, helo, mailFrom, rcptTo } from SMTP session or HTTP headers.
+async function callRspamdDirect(rawBuffer, smtpMeta = {}) {
   const start = process.hrtime.bigint();
   try {
     const headers = {
       "User-Agent": "etdp-gateway/0.1",
-      "IP": "127.0.0.1",
+      "IP": smtpMeta.ip || "127.0.0.1",
       "Message-Length": rawBuffer.length.toString(),
     };
+    if (smtpMeta.helo) headers["Helo"] = smtpMeta.helo;
+    if (smtpMeta.mailFrom) headers["From"] = smtpMeta.mailFrom;
+    if (smtpMeta.rcptTo) headers["Rcpt"] = smtpMeta.rcptTo;
     if (RSPAMD_PASSWORD) headers["Password"] = RSPAMD_PASSWORD;
     const { statusCode, body } = await request(`${RSPAMD_URL.replace(/\/$/, "")}/checkv2`, {
       method: "POST", headers, body: rawBuffer,
@@ -682,11 +686,19 @@ app.post("/v1/analyze/eml", async (req, res) => {
     return res.status(400).json({ error: "empty EML body" });
   }
 
+  // Extract SMTP metadata from HTTP headers (set by upstream MTA or relay)
+  const smtpMeta = {
+    ip: req.headers["x-client-ip"] || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip,
+    helo: req.headers["x-helo"] || req.headers["x-client-hostname"] || "",
+    mailFrom: req.headers["x-mail-from"] || "",
+    rcptTo: req.headers["x-rcpt-to"] || "",
+  };
+
   // Stage 1: fire raw bytes at rspamd + parse EML in parallel.
   const rawMimeStr = rawBody.toString("utf-8");
   console.log(`[gateway] EML endpoint: rawBody=${rawBody.length} bytes, type=${typeof req.body}, isBuffer=${Buffer.isBuffer(req.body)}`);
   const [rspamdResult, parseResult] = await Promise.all([
-    callRspamdDirect(rawBody),
+    callRspamdDirect(rawBody, smtpMeta),
     parseEml(rawMimeStr).catch((err) => ({ error: err.message })),
   ]);
   console.log(`[gateway] EML parsed: sender=${parseResult.sender?.slice(0,40)}, subj=${parseResult.subject?.slice(0,40)}, body_len=${parseResult.body_text?.length}`);
@@ -1306,9 +1318,17 @@ const smtpServer = new SMTPServer({
         const recipient = session.envelope.rcptTo[0]?.address || "";
         const orgId = await deriveOrgId(recipient);
 
+        // Capture SMTP session metadata for rspamd SPF/DKIM/DMARC checks
+        const smtpMeta = {
+          ip: session.remoteAddress,
+          helo: session.clientHostname || session.hostNameAppearsAs,
+          mailFrom: session.envelope.mailFrom?.address || "",
+          rcptTo: recipient,
+        };
+
         const rawMimeStr = rawBuffer.toString("utf-8");
         const [rspamdResult, parseResult] = await Promise.all([
-          callRspamdDirect(rawBuffer),
+          callRspamdDirect(rawBuffer, smtpMeta),
           parseEml(rawMimeStr).catch((err) => ({ error: err.message })),
         ]);
 

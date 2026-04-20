@@ -187,6 +187,9 @@ const CLASSIFIER_THREAT_MAP = {
   "spam":                   "SPAM_CONTENT",
   "newsletter":             "UNSOLICITED_NEWSLETTER",
   "graymail":               "GRAYMAIL_MARKETING",
+  // Evasion / Obfuscation
+  "evasion":                "MULTILINGUAL_OBFUSCATION",
+  "obfuscation":            "MULTILINGUAL_OBFUSCATION",
 };
 
 // --- Thread context formatter ---
