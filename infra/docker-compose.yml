@@ -68,6 +68,10 @@ services:
       SMTP_PORT: "2525"
       # SMTP_TLS_KEY: /certs/key.pem
       # SMTP_TLS_CERT: /certs/cert.pem
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
+      GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:-}"
+      GOOGLE_REDIRECT_URI: "${GOOGLE_REDIRECT_URI:-}"
+      GOOGLE_SSO_REDIRECT_URI: "${GOOGLE_SSO_REDIRECT_URI:-}"
     ports:
       - "8000:8000"
       - "2525:2525"
