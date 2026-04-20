@@ -9,7 +9,7 @@ services:
       MYSQL_PASSWORD: etdp
     # Grant etdp user global privileges so it can CREATE DATABASE for
     # lazy per-org provisioning. In prod use a dedicated admin role.
-    command: --mysql-native-password=ON
+    command: --mysql-native-password=ON --max-connections=500
     ports: ["3306:3306"]
     volumes:
       - mysql_data:/var/lib/mysql
