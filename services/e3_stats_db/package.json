@@ -1,0 +1,14 @@
+{
+  "name": "@etdp/e3_stats_db",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": {
+    "@etdp/shared": "file:../../shared",
+    "express": "^4.21.0",
+    "mysql2": "^3.11.3",
+    "simple-statistics": "^7.8.3",
+    "zod": "^3.23.8"
+  }
+}

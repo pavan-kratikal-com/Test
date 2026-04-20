@@ -1,0 +1,796 @@
+openapi: 3.0.3
+info:
+  title: ETDP - Email Threat Detection Pipeline API
+  description: |
+    9-engine email threat detection pipeline with fast-path/deep-path orchestration,
+    per-org multi-tenant configuration, A/B model deployment, and feedback loop.
+  version: 0.2.0
+  contact:
+    name: ETDP Team
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+
+tags:
+  - name: Analysis
+    description: Email threat analysis endpoints
+  - name: Feedback
+    description: Feedback and verdict correction
+  - name: History
+    description: Verdict history and statistics
+  - name: Admin
+    description: Organization management
+  - name: Models
+    description: Per-org model registry and deployments
+  - name: Health
+    description: Service health checks
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Gateway health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: gateway
+
+  /v1/analyze:
+    post:
+      tags: [Analysis]
+      summary: Analyze an email for threats
+      description: |
+        Runs the email through the 9-engine pipeline:
+        - **Fast path** (Stage 1): E1 rspamd
+        - **Fast path** (Stage 2): E2 SLM, E3 Stats DB, E4 Graph DB (parallel)
+        - **Deep path** (async via Kafka or sync fallback): E5 URL Scanner, E6 Attachment, E7 Visual, E9 Specialized ML
+
+        If the fast-path confidence is below 85%, deep-path engines are invoked asynchronously
+        via Kafka. The verdict is returned immediately with `async_deep_path: true` and updated
+        in the database when deep-path analysis completes.
+      operationId: analyzeEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailInput"
+            example:
+              org_id: org_demo_001
+              message_id: "<abc123@mail.example.com>"
+              sender: ceo@login-microsft.top
+              recipients:
+                - finance@example.com
+              subject: "URGENT: wire transfer needed immediately"
+              body_text: "Please process a wire transfer ASAP. Confirm here: https://login-microsft.top/auth"
+              body_html: "<form><input type=\"password\" name=\"p\"></form>"
+              headers:
+                Authentication-Results: "spf=fail dmarc=fail"
+              attachments:
+                - filename: invoice.exe
+                  size: 12345
+      responses:
+        "200":
+          description: Threat analysis verdict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalVerdict"
+        "400":
+          description: Invalid email payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/feedback:
+    post:
+      tags: [Feedback]
+      summary: Submit feedback on a verdict
+      description: |
+        Allows users or admins to correct a verdict. Used to build training data
+        for per-org model fine-tuning.
+      operationId: submitFeedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, message_id, action]
+              properties:
+                org_id:
+                  type: string
+                  description: Organization ID
+                  example: org_demo_001
+                message_id:
+                  type: string
+                  description: Email message ID
+                  example: "<abc123@mail.example.com>"
+                action:
+                  type: string
+                  enum: [spam, ham, phishing, not_spam, release, confirm_block]
+                  description: Feedback action
+                  example: phishing
+                source:
+                  type: string
+                  default: user
+                  description: Source of the feedback
+                  example: admin
+                notes:
+                  type: string
+                  nullable: true
+                  description: Optional notes
+                  example: "Confirmed CEO impersonation attempt"
+      responses:
+        "200":
+          description: Feedback recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  id:
+                    type: integer
+                    description: Feedback record ID
+                    example: 42
+        "400":
+          description: Missing required fields or invalid action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/verdicts:
+    get:
+      tags: [History]
+      summary: List verdicts for an organization
+      operationId: listVerdicts
+      parameters:
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+          example: org_demo_001
+        - name: label
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [ham, spam, marketing, promotion, phishing, bec, malware, trash]
+          description: Filter by label
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Filter verdicts created after this timestamp
+          example: "2026-04-01T00:00:00Z"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+          description: Max number of verdicts to return
+      responses:
+        "200":
+          description: List of verdicts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                    example: 3
+                  verdicts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VerdictSummary"
+        "400":
+          description: Missing org_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/stats:
+    get:
+      tags: [History]
+      summary: Get verdict statistics for an organization
+      operationId: getStats
+      parameters:
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+          example: org_demo_001
+      responses:
+        "200":
+          description: Verdict breakdown by label and verdict
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  org_id:
+                    type: string
+                    example: org_demo_001
+                  breakdown:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        label:
+                          type: string
+                          example: spam
+                        verdict:
+                          type: string
+                          example: quarantine
+                        n:
+                          type: integer
+                          example: 15
+        "400":
+          description: Missing org_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/orgs:
+    post:
+      tags: [Admin]
+      summary: Create or update an organization
+      description: |
+        Registers an org in the shared database and provisions a per-org MySQL
+        database with all required tables (verdicts, feedback, stats, graph, etc.).
+      operationId: createOrg
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, name]
+              properties:
+                org_id:
+                  type: string
+                  example: org_acme_001
+                name:
+                  type: string
+                  example: Acme Corp
+                industry:
+                  type: string
+                  default: general
+                  example: finance
+                timezone:
+                  type: string
+                  default: UTC
+                  example: America/New_York
+                business_hours_start:
+                  type: integer
+                  default: 8
+                  example: 9
+                business_hours_end:
+                  type: integer
+                  default: 20
+                  example: 18
+                thresholds:
+                  type: object
+                  properties:
+                    block:
+                      type: number
+                      default: 10
+                    quarantine:
+                      type: number
+                      default: 5
+      responses:
+        "200":
+          description: Organization created/updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  org_id:
+                    type: string
+                    example: org_acme_001
+                  db_name:
+                    type: string
+                    example: etdp_org_acme_001
+                  provisioned:
+                    type: boolean
+                    example: true
+
+  /v1/orgs/{id}:
+    get:
+      tags: [Admin]
+      summary: Get organization details
+      operationId: getOrg
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: org_demo_001
+      responses:
+        "200":
+          description: Organization details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Org"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/orgs/{id}/thresholds:
+    put:
+      tags: [Admin]
+      summary: Update organization thresholds
+      operationId: updateThresholds
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: org_demo_001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                block:
+                  type: number
+                  description: Score threshold to block an email
+                  example: 10
+                quarantine:
+                  type: number
+                  description: Score threshold to quarantine an email
+                  example: 5
+      responses:
+        "200":
+          description: Thresholds updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  org_id:
+                    type: string
+                  thresholds:
+                    type: object
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/orgs/{id}/models:
+    get:
+      tags: [Models]
+      summary: List trained models for an organization
+      operationId: listModels
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: org_demo_001
+      responses:
+        "200":
+          description: List of trained models
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  models:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Model"
+
+  /v1/orgs/{id}/deployments:
+    get:
+      tags: [Models]
+      summary: List active model deployments (incumbent/canary)
+      operationId: listDeployments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: org_demo_001
+      responses:
+        "200":
+          description: Active deployments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    role:
+                      type: string
+                      enum: [incumbent, canary]
+                      example: incumbent
+                    model_version:
+                      type: string
+                      example: v1-20260418
+                    traffic_pct:
+                      type: number
+                      description: Percentage of traffic routed to this model
+                      example: 100
+                    val_accuracy:
+                      type: number
+                      nullable: true
+                      example: 0.95
+
+  /v1/orgs/{id}/training_jobs:
+    get:
+      tags: [Models]
+      summary: List training jobs for an organization
+      operationId: listTrainingJobs
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: org_demo_001
+      responses:
+        "200":
+          description: List of training jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  jobs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TrainingJob"
+
+components:
+  schemas:
+    EmailInput:
+      type: object
+      required: [org_id, message_id, sender, recipients]
+      properties:
+        org_id:
+          type: string
+          description: Organization identifier
+        message_id:
+          type: string
+          description: Unique email message ID
+        sender:
+          type: string
+          description: Sender email address
+        recipients:
+          type: array
+          items:
+            type: string
+          description: Recipient email addresses
+        subject:
+          type: string
+          default: ""
+        body_text:
+          type: string
+          default: ""
+        body_html:
+          type: string
+          nullable: true
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          default: {}
+        attachments:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          default: []
+        received_at:
+          type: string
+          format: date-time
+          description: When the email was received (ISO 8601)
+        raw_mime:
+          type: string
+          nullable: true
+          description: Raw MIME content
+
+    Signal:
+      type: object
+      properties:
+        engine:
+          type: string
+          description: Engine that produced this signal
+          example: slm
+        signal:
+          type: string
+          description: Signal name
+          example: URGENCY_LANGUAGE
+        score:
+          type: number
+          description: Signal score (positive = threat, negative = benign)
+          example: 6
+        detail:
+          type: object
+          additionalProperties: true
+          description: Engine-specific signal details
+
+    FinalVerdict:
+      type: object
+      properties:
+        verdict:
+          type: string
+          enum: [allow, quarantine, block]
+          description: Final verdict
+          example: quarantine
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Confidence score (0-1)
+          example: 0.65
+        label:
+          type: string
+          enum: [ham, spam, marketing, promotion, phishing, bec, malware, trash]
+          description: Classification label
+          example: spam
+        threat_score:
+          type: number
+          description: Aggregate threat score
+          example: 9.7
+        reason:
+          type: string
+          description: Human-readable explanation
+          example: "Aggregate score 9.7 >= quarantine threshold 5."
+        threats:
+          type: array
+          items:
+            type: object
+            properties:
+              category:
+                type: string
+                example: aggregate
+              score:
+                type: number
+                example: 9.7
+        signals_fired:
+          type: array
+          items:
+            $ref: "#/components/schemas/Signal"
+          description: All signals from all engines
+        iocs:
+          type: object
+          properties:
+            urls:
+              type: array
+              items:
+                type: string
+            domains:
+              type: array
+              items:
+                type: string
+            ips:
+              type: array
+              items:
+                type: string
+            hashes:
+              type: array
+              items:
+                type: string
+        actions_taken:
+          type: array
+          items:
+            type: string
+          example: [quarantine]
+        pipeline:
+          type: object
+          properties:
+            fast_path_ms:
+              type: number
+              description: Fast path latency in milliseconds
+              example: 245.5
+            deep_path_ms:
+              type: number
+              description: Deep path latency in milliseconds (0 if async)
+              example: 0
+            engines_invoked:
+              type: array
+              items:
+                type: string
+              example: [e1_rspamd, e2_slm, e3_stats_db, e4_graph_db]
+            stats_db_weight:
+              type: number
+              description: Current ramp weight for Stats DB (0-1 over 30 days)
+              example: 0.5
+            async_deep_path:
+              type: boolean
+              description: Whether deep path was dispatched asynchronously via Kafka
+              example: true
+        metadata:
+          type: object
+          properties:
+            org_id:
+              type: string
+            message_id:
+              type: string
+            model_version:
+              type: string
+              example: phase2-0.1
+            org_known:
+              type: boolean
+              description: Whether the org was found in the registry
+            industry:
+              type: string
+              example: general
+            org_model:
+              type: object
+              nullable: true
+              description: Per-org model scoring result (null if no model deployed)
+              properties:
+                model_version:
+                  type: string
+                model_role:
+                  type: string
+                  enum: [incumbent, canary]
+                probability:
+                  type: number
+                features_on:
+                  type: integer
+
+    VerdictSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        org_id:
+          type: string
+        message_id:
+          type: string
+        sender:
+          type: string
+        recipient:
+          type: string
+        verdict:
+          type: string
+          enum: [allow, quarantine, block]
+        label:
+          type: string
+        confidence:
+          type: number
+        threat_score:
+          type: number
+        reason:
+          type: string
+        fast_path_ms:
+          type: number
+        deep_path_ms:
+          type: number
+        created_at:
+          type: string
+          format: date-time
+
+    Org:
+      type: object
+      properties:
+        org_id:
+          type: string
+        name:
+          type: string
+        industry:
+          type: string
+        timezone:
+          type: string
+        business_hours_start:
+          type: integer
+        business_hours_end:
+          type: integer
+        thresholds:
+          type: object
+        onboarded_at:
+          type: string
+          format: date-time
+
+    Model:
+      type: object
+      properties:
+        version:
+          type: string
+        model_kind:
+          type: string
+        val_accuracy:
+          type: number
+        val_precision:
+          type: number
+        val_recall:
+          type: number
+        val_fp_rate:
+          type: number
+        trained_at:
+          type: string
+          format: date-time
+        trained_on:
+          type: integer
+          description: Number of training samples
+        status:
+          type: string
+        parent_version:
+          type: string
+          nullable: true
+
+    TrainingJob:
+      type: object
+      properties:
+        id:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+        labels_used:
+          type: integer
+        resulting_version:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: "org_id required"

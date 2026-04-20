@@ -1,0 +1,11 @@
+{
+  "org_id": "org_demo_001",
+  "message_id": "<legit001@example.com>",
+  "sender": "john.smith@example.com",
+  "recipients": ["team@example.com"],
+  "subject": "Team standup moved to 10am tomorrow",
+  "body_text": "Hi team, Just a quick heads up that our standup is moved to 10am tomorrow due to the all-hands meeting at 9. See you there! - John",
+  "body_html": "<p>Hi team, standup moved to 10am tomorrow.</p>",
+  "headers": { "Authentication-Results": "spf=pass dmarc=pass dkim=pass" },
+  "attachments": []
+}

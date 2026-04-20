@@ -1,0 +1,14 @@
+{
+  "name": "@etdp/e5_url_scanner",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": {
+    "@etdp/shared": "file:../../shared",
+    "express": "^4.21.0",
+    "mysql2": "^3.11.3",
+    "undici": "^6.20.0",
+    "zod": "^3.23.8"
+  }
+}

@@ -1,0 +1,174 @@
+name: etdp
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+    # Grant etdp user global privileges so it can CREATE DATABASE for
+    # lazy per-org provisioning. In prod use a dedicated admin role.
+    command: --mysql-native-password=ON --max-connections=500
+    ports: ["3306:3306"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql-grants.sql:/docker-entrypoint-initdb.d/zz-grants.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-prootpw"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: { context: .., dockerfile: Dockerfile.migrate }
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+    depends_on:
+      mysql: { condition: service_healthy }
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  kafka:
+    image: apache/kafka:latest
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+    ports: ["9092:9092"]
+
+  rspamd:
+    image: rspamd/rspamd:latest
+    environment:
+      RSPAMD_PASSWORD: "${RSPAMD_PASSWORD:-etdp}"
+    ports: ["11333:11333", "11334:11334"]
+    depends_on: [redis]
+
+  gateway:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: gateway } }
+    environment:
+      PORT: "8000"
+      MYSQL_HOST: mysql
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+      MYSQL_MULTI_TENANT: "1"
+      REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: kafka:9092
+      SMTP_PORT: "2525"
+      # SMTP_TLS_KEY: /certs/key.pem
+      # SMTP_TLS_CERT: /certs/cert.pem
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
+      GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:-}"
+      GOOGLE_REDIRECT_URI: "${GOOGLE_REDIRECT_URI:-}"
+      GOOGLE_SSO_REDIRECT_URI: "${GOOGLE_SSO_REDIRECT_URI:-}"
+    ports:
+      - "8000:8000"
+      - "2525:2525"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      e1_rspamd: { condition: service_started }
+      e2_slm: { condition: service_started }
+      e3_stats_db: { condition: service_started }
+      e4_graph_db: { condition: service_started }
+      e5_url_scanner: { condition: service_started }
+      e6_attachment: { condition: service_started }
+      e7_visual: { condition: service_started }
+      e8_sandbox: { condition: service_started }
+      e9_specialized_ml: { condition: service_started }
+      synthesizer: { condition: service_started }
+
+  deep_path_worker:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: deep_path_worker } }
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+      MYSQL_MULTI_TENANT: "1"
+      KAFKA_BROKERS: kafka:9092
+      E5_URL_SCANNER_URL: http://e5_url_scanner:80
+      E6_ATTACHMENT_URL: http://e6_attachment:80
+      E7_VISUAL_URL: http://e7_visual:80
+      E9_SPECIALIZED_ML_URL: http://e9_specialized_ml:80
+      SYNTHESIZER_URL: http://synthesizer:80
+    depends_on:
+      kafka: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
+
+  e1_rspamd:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e1_rspamd } }
+    environment:
+      RSPAMD_URL: http://rspamd:11333
+      RSPAMD_PASSWORD: "${RSPAMD_PASSWORD:-etdp}"
+    depends_on: [rspamd]
+  e2_slm:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e2_slm } }
+    environment:
+      SLM_BASE_URL: "${SLM_BASE_URL:-http://e10_classifier:7070/v1}"
+      SLM_API_KEY: "${SLM_API_KEY:-}"
+      SLM_MODEL: "${SLM_MODEL:-email-classifier-v1}"
+      SLM_MODE: "${SLM_MODE:-classifier}"
+      SLM_TIMEOUT: "${SLM_TIMEOUT:-30000}"
+      SLM_ENABLED: "${SLM_ENABLED:-1}"
+  e3_stats_db:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e3_stats_db } }
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+      MYSQL_MULTI_TENANT: "1"
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+  e4_graph_db:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e4_graph_db } }
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: etdp
+      MYSQL_PASSWORD: etdp
+      MYSQL_MULTI_TENANT: "1"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+  e5_url_scanner:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e5_url_scanner } }
+  e6_attachment:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e6_attachment } }
+  e7_visual:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e7_visual } }
+  e8_sandbox:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e8_sandbox } }
+  e9_specialized_ml:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: e9_specialized_ml } }
+  e10_classifier:
+    restart: unless-stopped
+    build:
+      context: ../services/e10_classifier
+      dockerfile: Dockerfile
+    ports:
+      - "7070:7070"
+  synthesizer:
+    restart: unless-stopped
+    build: { context: .., dockerfile: Dockerfile, args: { SERVICE: synthesizer } }
+
+volumes:
+  mysql_data:

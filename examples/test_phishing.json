@@ -1,0 +1,11 @@
+{
+  "org_id": "org_demo_001",
+  "message_id": "<phish002@paypa1-verify.com>",
+  "sender": "security@paypa1-verify.com",
+  "recipients": ["user@example.com"],
+  "subject": "Your account has been limited - Verify Now",
+  "body_text": "Dear Customer, Your PayPal account has been limited due to suspicious activity. Please click the link below immediately to verify your identity or your account will be permanently suspended within 24 hours. https://paypa1-verify.com/login/secure",
+  "body_html": "<p>Your PayPal account has been <b>limited</b>. <a href='https://paypa1-verify.com/login/secure'>Click here immediately</a> or your account will be <b>permanently suspended</b>.</p>",
+  "headers": { "Authentication-Results": "spf=fail dmarc=fail" },
+  "attachments": []
+}
